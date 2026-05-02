@@ -13,6 +13,7 @@
 import streamlit as st
 import math
 import base64
+from pathlib import Path
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle, Circle
 
@@ -24,9 +25,14 @@ st.set_page_config(
     layout="wide"
 )
 
+BASE_DIR = Path(__file__).resolve().parent
+
 
 def image_to_base64(image_path):
-    with open(image_path, "rb") as image_file:
+    image_file_path = BASE_DIR / image_path
+    if not image_file_path.exists():
+        return None
+    with image_file_path.open("rb") as image_file:
         return base64.b64encode(image_file.read()).decode("utf-8")
 
 
@@ -152,9 +158,17 @@ st.markdown("""
 # ==========================================================
 # HEADER
 # ==========================================================
-st.markdown("""
+logo_html = ""
+if logo_ulm_base64:
+    logo_html = (
+        f'<div class="titlebox-logo">'
+        f'<img src="data:image/png;base64,{logo_ulm_base64}" alt="Logo ULM">'
+        f'</div>'
+    )
+
+st.markdown(f"""
 <div class="titlebox">
-<div class="titlebox-logo"><img src="data:image/png;base64,{}" alt="Logo ULM"></div>
+{logo_html}
 <div class="titlebox-text">
 <div class="title1">DESAIN PENULANGAN LENTUR BALOK BETON BERTULANG</div>
 <div class="title2">MENURUT SNI 2847:2019</div>
@@ -162,7 +176,7 @@ st.markdown("""
 <div class="titlemeta">FAKULTAS TEKNIK UNIVERSITAS LAMBUNG MANGKURAT</div>
 </div>
 </div>
-""".format(logo_ulm_base64), unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
 # ==========================================================
 # FUNCTIONS
