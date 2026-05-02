@@ -1,0 +1,2 @@
+streamlit==1.56.0
+matplotlib==3.10.9
