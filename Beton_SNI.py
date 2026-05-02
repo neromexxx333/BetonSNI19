@@ -1,2167 +1,3345 @@
-# app.py
-# ==========================================================
-# DESAIN PENULANGAN LENTUR BALOK BETON BERTULANG
-# MENURUT SNI 2847:2019
-# Pengembang: Ir. Darmansyah Tjitradi, MT., IPU
-#
-# FULL 1 FILE
-# TANPA ERROR
-# TANPA TERPOTONG
-# DETAIL TULANGAN BALOK SUDAH BENAR
-# ==========================================================
-
-import streamlit as st
-import math
 import base64
+import io
+import tempfile
+import textwrap
 from pathlib import Path
+
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle, Circle
-
-# ==========================================================
-# CONFIG
-# ==========================================================
-st.set_page_config(
-    page_title="Desain Penulangan Balok",
-    layout="wide"
-)
-
-BASE_DIR = Path(__file__).resolve().parent
-
-
-def image_to_base64(image_path):
-    image_file_path = BASE_DIR / image_path
-    if not image_file_path.exists():
-        return None
-    with image_file_path.open("rb") as image_file:
-        return base64.b64encode(image_file.read()).decode("utf-8")
-
-
-logo_ulm_base64 = image_to_base64("Logo_ULM.png")
-
-# ==========================================================
-# STYLE
-# ==========================================================
-st.markdown("""
-<style>
-
-.block-container{
-    padding-top:2.3rem;
-    padding-bottom:1rem;
-}
-
-.titlebox{
-    background:#0b4f94;
-    color:white;
-    border-radius:8px;
-    padding:18px 24px;
-    margin-bottom:18px;
-    display:flex;
-    align-items:center;
-    gap:20px;
-}
-
-.titlebox-logo{
-    flex:0 0 auto;
-    width:132px;
-    height:132px;
-    display:flex;
-    align-items:center;
-    justify-content:center;
-}
-
-.titlebox-logo img{
-    width:100%;
-    height:100%;
-    object-fit:contain;
-    display:block;
-    clip-path:polygon(50% 1%, 95% 20%, 100% 82%, 82% 99%, 18% 99%, 0% 82%, 5% 20%);
-}
-
-.titlebox-text{
-    flex:1;
-    text-align:center;
-    line-height:1.35;
-}
-
-@media (max-width: 760px){
-    .titlebox{
-        flex-direction:column;
-        text-align:center;
-    }
-
-    .titlebox-logo{
-        width:108px;
-        height:108px;
-    }
-
-    .title1{
-        font-size:24px;
-    }
-
-    .title2{
-        font-size:19px;
-    }
-
-    .title3{
-        font-size:16px;
-    }
-}
-
-.title1{
-    font-size:30px;
-    font-weight:700;
-}
-
-.title2{
-    font-size:22px;
-    font-weight:700;
-    margin-top:4px;
-}
-
-.title3{
-    font-size:22px;
-    margin-top:8px;
-}
-
-.titlemeta{
-    font-size:22px;
-    font-weight:700;
-    margin-top:8px;
-}
-
-.title4{
-    font-size:22px;
-    margin-top:8px;
-}
-
-.sec{
-    background:#1f5fa8;
-    color:white;
-    padding:6px;
-    font-weight:bold;
-    margin-top:8px;
-    margin-bottom:6px;
-}
-
-.sec2{
-    background:#7d8a97;
-    color:white;
-    padding:6px;
-    font-weight:bold;
-    margin-top:8px;
-    margin-bottom:6px;
-}
-
-</style>
-""", unsafe_allow_html=True)
-
-# ==========================================================
-# HEADER
-# ==========================================================
-logo_html = ""
-if logo_ulm_base64:
-    logo_html = (
-        f'<div class="titlebox-logo">'
-        f'<img src="data:image/png;base64,{logo_ulm_base64}" alt="Logo ULM">'
-        f'</div>'
-    )
-
-st.markdown(f"""
-<div class="titlebox">
-{logo_html}
-<div class="titlebox-text">
-<div class="title1">DESAIN PENULANGAN LENTUR BALOK BETON BERTULANG</div>
-<div class="title2">MENURUT SNI 2847:2019</div>
-<div class="titlemeta">Pengembang: Ir. Darmansyah Tjitradi, MT., IPU</div>
-<div class="titlemeta">FAKULTAS TEKNIK UNIVERSITAS LAMBUNG MANGKURAT</div>
-</div>
-</div>
-""", unsafe_allow_html=True)
-
-# ==========================================================
-# FUNCTIONS
-# ==========================================================
-def area_bar(d):
-    return math.pi * d * d / 4.0
-
-def beta1(fc):
-    if fc <= 28:
-        return 0.85
-    elif fc >= 55:
-        return 0.65
-    return 0.85 - 0.05 * ((fc - 28) / 7)
-
-def bars_per_layer(bw, cover, stirrup, db, clear=25):
-    width = bw - 2 * (cover + stirrup)
-    n = int((width + clear) // (db + clear))
-    return max(2, n)
-
-def make_even_layers(total, maxrow):
-    arr = []
-    remain = total
-
-    while remain > 0:
-        use = min(remain, maxrow)
-
-        if remain - use == 1 and use > 2:
-            use -= 1
-
-        if use == 1:
-            use = 2
-
-        arr.append(use)
-        remain -= use
-
-        if remain == 1:
-            arr.append(2)
-            remain = 0
-
-    return arr
-
-def bar_positions(n, bw, cover, stirrup, db):
-    x1 = cover + stirrup + db/2
-    x2 = bw - cover - stirrup - db/2
-
-    if n == 2:
-        return [x1, x2]
-
-    step = (x2 - x1) / (n - 1)
-    return [x1 + i * step for i in range(n)]
-
-def steel_stress_from_strain(strain, fy, Es=200000):
-    stress = Es * strain
-    return max(-fy, min(fy, stress))
-
-def max_total_layers(h, cover, stirrup, db, clear=25):
-    gap = db + clear
-    y_far = h - cover - stirrup - db/2
-    y_near = cover + stirrup + db/2
-    usable = y_far - y_near
-
-    if usable < gap:
-        return 0
-
-    return int(usable // gap) + 1
-
-def layers_fit_in_section(h, cover, stirrup, db, main_layers, min_layers, clear=25):
-    if not main_layers or not min_layers:
-        return False
-
-    gap = db + clear
-    y_far = h - cover - stirrup - db/2
-    y_near = cover + stirrup + db/2
-
-    last_main = y_far - (len(main_layers) - 1) * gap
-    last_min = y_near + (len(min_layers) - 1) * gap
-
-    return (last_main - last_min) >= gap
-
-def compression_face_name(tension_face):
-    return "bottom" if tension_face == "top" else "top"
-
-def face_label(face_name):
-    return "atas" if face_name == "top" else "bawah"
-
-def build_rebar_layers(h, cover, stirrup, db, main_layers, min_layers,
-                       tension_face):
-    Asbar = area_bar(db)
-    gap = db + 25
-    y_top = h - cover - stirrup - db/2
-    y_bottom = cover + stirrup + db/2
-    comp_face = compression_face_name(tension_face)
-
-    if tension_face == "top":
-        tension_positions = [y_top - j * gap for j, _ in enumerate(main_layers)]
-        compression_positions = [y_bottom + j * gap for j, _ in enumerate(min_layers)]
-    else:
-        tension_positions = [y_bottom + j * gap for j, _ in enumerate(main_layers)]
-        compression_positions = [y_top - j * gap for j, _ in enumerate(min_layers)]
-
-    def depth_from_compression_face(y_pos):
-        return y_pos if comp_face == "bottom" else h - y_pos
-
-    tension_data = []
-    for j, n in enumerate(main_layers):
-        tension_data.append({
-            "role": "tension",
-            "count": n,
-            "area": n * Asbar,
-            "y": tension_positions[j],
-            "depth": depth_from_compression_face(tension_positions[j])
-        })
-
-    compression_data = []
-    for j, n in enumerate(min_layers):
-        compression_data.append({
-            "role": "compression",
-            "count": n,
-            "area": n * Asbar,
-            "y": compression_positions[j],
-            "depth": depth_from_compression_face(compression_positions[j])
-        })
-
-    return tension_data + compression_data
-
-def installed_moment_capacity(bw, h, cover, stirrup, db, fc, fy,
-                              main_layers, min_layers, tension_face):
-    b1 = beta1(fc)
-    steel_layers = build_rebar_layers(
-        h, cover, stirrup, db, main_layers, min_layers, tension_face
-    )
-    tension_layers = [layer for layer in steel_layers if layer["role"] == "tension"]
-    compression_layers = [layer for layer in steel_layers if layer["role"] == "compression"]
-
-    def force_balance(c):
-        a = b1 * c
-        concrete_force = 0.85 * fc * bw * a
-        steel_force = 0.0
-
-        for layer in steel_layers:
-            strain = 0.003 * (c - layer["depth"]) / c
-            steel_force += layer["area"] * steel_stress_from_strain(strain, fy)
-
-        return concrete_force + steel_force
-
-    low = 1.0
-    high = max(1.5 * h, max(layer["depth"] for layer in steel_layers) * 1.25)
-    f_low = force_balance(low)
-    f_high = force_balance(high)
-    expand_count = 0
-
-    while f_low * f_high > 0 and expand_count < 40:
-        high *= 1.4
-        f_high = force_balance(high)
-        expand_count += 1
-
-    if f_low * f_high > 0:
-        return {
-            "Mn": 0.0,
-            "phiMn": 0.0,
-            "d": 0.0,
-            "dp": 0.0,
-            "dt": 0.0,
-            "c": 0.0,
-            "a": 0.0,
-            "eps_net": 0.0,
-            "eps_tension": 0.0,
-            "eps_compression": 0.0,
-            "fs_tension": 0.0,
-            "fs_compression": 0.0,
-            "Cc": 0.0,
-            "T": 0.0,
-            "Cs": 0.0,
-            "balance_left": 0.0,
-            "balance_diff": 0.0
-        }
-
-    for _ in range(80):
-        mid = 0.5 * (low + high)
-        f_mid = force_balance(mid)
-
-        if f_low * f_mid <= 0:
-            high = mid
-            f_high = f_mid
-        else:
-            low = mid
-            f_low = f_mid
-
-    c = 0.5 * (low + high)
-    a = b1 * c
-    concrete_force = 0.85 * fc * bw * a
-    mn_nmm = concrete_force * (a / 2.0)
-    steel_forces = []
-
-    for layer in steel_layers:
-        strain = 0.003 * (c - layer["depth"]) / c
-        steel_force = layer["area"] * steel_stress_from_strain(strain, fy)
-        steel_forces.append(steel_force)
-        mn_nmm += steel_force * layer["depth"]
-
-    mn_nmm = abs(mn_nmm)
-    As_tension = sum(layer["area"] for layer in tension_layers)
-    As_compression = sum(layer["area"] for layer in compression_layers)
-
-    d = sum(layer["area"] * layer["depth"] for layer in tension_layers) / As_tension
-    dp = (
-        sum(layer["area"] * layer["depth"] for layer in compression_layers) / As_compression
-        if As_compression > 0 else 0.0
-    )
-    dt = max(layer["depth"] for layer in tension_layers)
-
-    eps_net = 0.003 * (dt - c) / c
-    eps_tension = 0.003 * (d - c) / c
-    eps_compression = 0.003 * (c - dp) / c if As_compression > 0 else 0.0
-    fs_tension = abs(steel_stress_from_strain(-eps_tension, fy))
-    fs_compression = abs(steel_stress_from_strain(eps_compression, fy)) if As_compression > 0 else 0.0
-    Cc = concrete_force
-    T = sum(max(-force, 0.0) for force in steel_forces)
-    Cs = sum(max(force, 0.0) for force in steel_forces)
-    balance_left = Cc + Cs
-
-    return {
-        "Mn": mn_nmm / 1e6,
-        "phiMn": 0.90 * mn_nmm / 1e6,
-        "d": d,
-        "dp": dp,
-        "dt": dt,
-        "c": c,
-        "a": a,
-        "eps_net": eps_net,
-        "eps_tension": eps_tension,
-        "eps_compression": eps_compression,
-        "fs_tension": fs_tension,
-        "fs_compression": fs_compression,
-        "Cc": Cc,
-        "T": T,
-        "Cs": Cs,
-        "balance_left": balance_left,
-        "balance_diff": balance_left - T
-    }
-
-def auto_adjust_reinforcement(Mu, bw, h, cover, stirrup, db, fc, fy,
-                              start_main, start_min, tension_face):
-    target = abs(Mu)
-    nmax = bars_per_layer(bw, cover, stirrup, db)
-
-    start_main = max(2, start_main)
-    start_min = max(2, start_min)
-
-    max_layers = max_total_layers(h, cover, stirrup, db)
-    max_total_bars = max_layers * nmax if max_layers > 0 else 0
-    start_total = start_main + start_min
-    max_extra_total = max(0, max_total_bars - start_total)
-
-    best_fallback = None
-
-    for extra_total in range(max_extra_total + 1):
-        best_safe = None
-
-        for extra_min in range(extra_total + 1):
-            extra_main = extra_total - extra_min
-
-            n_main = start_main + extra_main
-            n_min = start_min + extra_min
-
-            main_layers = make_even_layers(n_main, nmax)
-            min_layers = make_even_layers(n_min, nmax)
-
-            if not layers_fit_in_section(h, cover, stirrup, db,
-                                         main_layers, min_layers):
-                continue
-
-            capacity = installed_moment_capacity(
-                bw, h, cover, stirrup, db, fc, fy,
-                main_layers, min_layers, tension_face
-            )
-
-            fallback_key = (-capacity["phiMn"], n_main + n_min,
-                            n_min, len(main_layers) + len(min_layers), n_main)
-
-            if best_fallback is None or fallback_key < best_fallback[0]:
-                best_fallback = (
-                    fallback_key, n_main, n_min, main_layers, min_layers, capacity
-                )
-
-            if capacity["phiMn"] + 1e-6 < target:
-                continue
-
-            safe_key = (n_main + n_min, n_min,
-                        len(main_layers) + len(min_layers), n_main)
-
-            if best_safe is None or safe_key < best_safe[0]:
-                best_safe = (
-                    safe_key, n_main, n_min, main_layers, min_layers, capacity
-                )
-
-        if best_safe is not None:
-            _, n_main, n_min, main_layers, min_layers, capacity = best_safe
-            return {
-                "n_main": n_main,
-                "n_min": n_min,
-                "main_layers": main_layers,
-                "min_layers": min_layers,
-                "capacity": capacity,
-                "status": "AMAN"
-            }
-
-    if best_fallback is not None:
-        _, n_main, n_min, main_layers, min_layers, capacity = best_fallback
-        return {
-            "n_main": n_main,
-            "n_min": n_min,
-            "main_layers": main_layers,
-            "min_layers": min_layers,
-            "capacity": capacity,
-            "status": "TIDAK AMAN"
-        }
-
-    return {
-        "n_main": start_main,
-        "n_min": start_min,
-        "main_layers": make_even_layers(start_main, nmax),
-        "min_layers": make_even_layers(start_min, nmax),
-        "capacity": installed_moment_capacity(
-            bw, h, cover, stirrup, db, fc, fy,
-            make_even_layers(start_main, nmax),
-            make_even_layers(start_min, nmax),
-            tension_face
-        ),
-        "status": "TIDAK AMAN"
-    }
-
-def design_zone(title, Mu, bw, h, cover, stirrup, db, fc, fy, tension_face):
-
-    d  = h - cover - stirrup - db/2
-    dp = cover + stirrup + db/2
-
-    Asbar = area_bar(db)
-    b1 = beta1(fc)
-
-    MuNmm = Mu * 1e6
-
-    # kapasitas maksimum tulangan tunggal
-    c = d / (1 + 0.005 / 0.003)
-    a = b1 * c
-
-    As1 = 0.85 * fc * bw * a / fy
-    Mn1 = As1 * fy * (d - a/2)
-    phiMn1 = 0.90 * Mn1
-
-    if MuNmm <= phiMn1:
-        As_main = MuNmm / (0.90 * fy * (0.90 * d))
-        As_min = 2 * Asbar
-    else:
-        M2 = MuNmm - phiMn1
-        As2 = M2 / (0.90 * fy * (d - dp))
-        As_main = As1 + As2
-        As_min = max(2 * Asbar, As2)
-
-    n_main = max(2, math.ceil(As_main / Asbar))
-    n_min  = max(2, math.ceil(As_min / Asbar))
-    adjusted = auto_adjust_reinforcement(
-        Mu, bw, h, cover, stirrup, db, fc, fy,
-        n_main, n_min, tension_face
-    )
-    capacity = adjusted["capacity"]
-    As_tension_prov = adjusted["n_main"] * Asbar
-    As_compression_prov = adjusted["n_min"] * Asbar
-
-    return {
-        "title": title,
-        "Mu": Mu,
-        "tension_face": tension_face,
-        "compression_face": compression_face_name(tension_face),
-        "n_main": adjusted["n_main"],
-        "n_min": adjusted["n_min"],
-        "main_layers": adjusted["main_layers"],
-        "min_layers": adjusted["min_layers"],
-        "As_tension_req": As_main,
-        "As_compression_req": As_min,
-        "As_tension_prov": As_tension_prov,
-        "As_compression_prov": As_compression_prov,
-        "Mn": capacity["Mn"],
-        "phiMn": capacity["phiMn"],
-        "d": capacity["d"],
-        "dp": capacity["dp"],
-        "dt": capacity["dt"],
-        "c": capacity["c"],
-        "a": capacity["a"],
-        "eps_net": capacity["eps_net"],
-        "eps_tension": capacity["eps_tension"],
-        "eps_compression": capacity["eps_compression"],
-        "fs_tension": capacity["fs_tension"],
-        "fs_compression": capacity["fs_compression"],
-        "Cc": capacity["Cc"],
-        "T": capacity["T"],
-        "Cs": capacity["Cs"],
-        "balance_left": capacity["balance_left"],
-        "balance_diff": capacity["balance_diff"],
-        "yield_tension": yield_status(capacity["fs_tension"], fy),
-        "yield_compression": yield_status(capacity["fs_compression"], fy),
-        "status": adjusted["status"]
-    }
-
-def layers_text(layers, db):
-    return " + ".join(f"{n}D{db}" for n in layers)
-
-def yield_status(fs, fy, tol=1e-3):
-    return "Leleh" if fs >= fy * (1.0 - tol) else "Belum leleh"
-
-def yield_strain(fy, Es=200000):
-    return fy / Es
-
-def top_bottom_bar_text(zone, db):
-    if zone["tension_face"] == "top":
-        top_text = f"Atas: {zone['n_main']}D{db}"
-        bottom_text = f"Bawah: {zone['n_min']}D{db}"
-    else:
-        top_text = f"Atas: {zone['n_min']}D{db}"
-        bottom_text = f"Bawah: {zone['n_main']}D{db}"
-
-    return top_text, bottom_text
-
-def report_markdown(zone, Ln, bw, h, cover, stirrup, db, fc, fy):
-    tension_face = face_label(zone["tension_face"])
-    compression_face = face_label(zone["compression_face"])
-    balance_mark = "OK" if abs(zone["balance_diff"]) <= 1e-2 else "Periksa"
-    eps_y = yield_strain(fy)
-
-    rows = [
-        ("Mu", f"{zone['Mu']:.2f} kN.m"),
-        ("Bentang bersih, Ln", f"{Ln:.2f} mm"),
-        ("Lebar balok, bw", f"{bw:.2f} mm"),
-        ("Tinggi balok, h", f"{h:.2f} mm"),
-        ("Mutu beton, fc", f"{fc:.2f} MPa"),
-        ("Mutu baja, fy", f"{fy:.2f} MPa"),
-        ("Selimut beton, cv", f"{cover:.2f} mm"),
-        ("Diameter tulangan geser", f"{stirrup:.2f} mm"),
-        ("Diameter tulangan tarik", f"D{db}"),
-        ("Diameter tulangan tekan", f"D{db}"),
-        ("Letak muka tarik", tension_face),
-        ("Letak muka tekan", compression_face),
-        ("Luas tulangan tarik perlu", f"{zone['As_tension_req']:.2f} mm2"),
-        ("Luas tulangan tekan perlu", f"{zone['As_compression_req']:.2f} mm2"),
-        ("Luas tulangan tarik terpasang", f"{zone['As_tension_prov']:.2f} mm2"),
-        ("Luas tulangan tekan terpasang", f"{zone['As_compression_prov']:.2f} mm2"),
-        ("Tulangan tarik terpasang", f"{zone['n_main']}D{db} ({layers_text(zone['main_layers'], db)})"),
-        ("Tulangan tekan terpasang", f"{zone['n_min']}D{db} ({layers_text(zone['min_layers'], db)})"),
-        ("Tinggi efektif tulangan tarik, d", f"{zone['d']:.2f} mm"),
-        ("Tinggi efektif tulangan tekan, d'", f"{zone['dp']:.2f} mm"),
-        ("Lokasi tulangan terluar, dt", f"{zone['dt']:.2f} mm"),
-        ("Lokasi garis netral, c", f"{zone['c']:.2f} mm"),
-        ("Tinggi blok stress ekivalen, a", f"{zone['a']:.2f} mm"),
-        ("Regangan netto", f"{abs(zone['eps_net']):.6f}"),
-        ("Regangan tul tekan", f"{abs(zone['eps_compression']):.6f}"),
-        ("Regangan leleh tulangan tekan", f"{eps_y:.6f}"),
-        ("Regangan tul tarik", f"{abs(zone['eps_tension']):.6f}"),
-        ("Regangan leleh tulangan tarik", f"{eps_y:.6f}"),
-        ("Tegangan tarik", f"{zone['fs_tension']:.2f} MPa"),
-        ("Tegangan tekan", f"{zone['fs_compression']:.2f} MPa"),
-        ("Kondisi leleh tulangan tarik", zone["yield_tension"]),
-        ("Kondisi leleh tulangan tekan", zone["yield_compression"]),
-        ("Gaya tekan beton, Cc", f"{zone['Cc'] / 1000.0:.2f} kN"),
-        ("Gaya tarik tul baja, T", f"{zone['T'] / 1000.0:.2f} kN"),
-        ("Gaya tekan tul baja, Cs", f"{zone['Cs'] / 1000.0:.2f} kN"),
-        ("Kontrol keseimbangan, Cc + Cs = T", f"{zone['balance_left'] / 1000.0:.2f} kN = {zone['T'] / 1000.0:.2f} kN ({balance_mark})"),
-        ("Selisih keseimbangan, (Cc + Cs - T)", f"{zone['balance_diff'] / 1000.0:.4f} kN ({balance_mark})"),
-        ("Momen nominal balok, Mn", f"{zone['Mn']:.2f} kN.m"),
-        ("Momen rencana balok, phiMn", f"{zone['phiMn']:.2f} kN.m"),
-        ("Status", zone["status"])
-    ]
-
-    markdown = "| Parameter | Nilai |\n|---|---|\n"
-    for label, value in rows:
-        markdown += f"| {label} | {value} |\n"
-    return markdown
-
-def draw_section_figure(zone, bw, h, cover, stirrup, db):
-    fig, ax = plt.subplots(figsize=(4.6, 6.2))
-
-    ax.add_patch(Rectangle((0, 0), bw, h, fill=False))
-    ax.add_patch(Rectangle((cover, cover),
-                           bw - 2 * cover,
-                           h - 2 * cover,
-                           fill=False))
-
-    gap = db + 25
-    y_top = h - cover - stirrup - db/2
-    y_bot = cover + stirrup + db/2
-
-    if zone["tension_face"] == "top":
-        top_layers = zone["main_layers"]
-        top_color = "red"
-        bottom_layers = zone["min_layers"]
-        bottom_color = "blue"
-    else:
-        top_layers = zone["min_layers"]
-        top_color = "green"
-        bottom_layers = zone["main_layers"]
-        bottom_color = "blue"
-
-    for row, n in enumerate(top_layers):
-        yy = y_top - row * gap
-        for x in bar_positions(n, bw, cover, stirrup, db):
-            ax.add_patch(Circle((x, yy), db/2, color=top_color))
-
-    for row, n in enumerate(bottom_layers):
-        yy = y_bot + row * gap
-        for x in bar_positions(n, bw, cover, stirrup, db):
-            ax.add_patch(Circle((x, yy), db/2, color=bottom_color))
-
-    top_text, bottom_text = top_bottom_bar_text(zone, db)
-
-    ax.annotate(
-        "", xy=(0, -28), xytext=(bw, -28),
-        arrowprops=dict(arrowstyle="<->", lw=0.9, color="black")
-    )
-    ax.text(bw/2, -42, f"bw = {bw:.0f} mm", ha="center", va="top", fontsize=8)
-
-    ax.annotate(
-        "", xy=(bw + 30, 0), xytext=(bw + 30, h),
-        arrowprops=dict(arrowstyle="<->", lw=0.9, color="black")
-    )
-    ax.text(bw + 42, h/2, f"h = {h:.0f} mm", rotation=90,
-            ha="left", va="center", fontsize=8)
-
-    ax.text(bw/2, h + 66, f"Dimensi balok = {bw:.0f} x {h:.0f} mm",
-            ha="center", va="bottom", fontsize=8, fontweight="bold")
-    ax.text(bw/2, h + 50, f"Diameter tulangan utama = D{db}",
-            ha="center", va="bottom", fontsize=8)
-    ax.text(bw/2, h + 34, f"Diameter tulangan geser = {stirrup:.0f} mm",
-            ha="center", va="bottom", fontsize=8)
-    ax.text(bw/2, h + 18, top_text,
-            ha="center", va="bottom", fontsize=8, color=top_color)
-    ax.text(bw/2, -66, bottom_text,
-            ha="center", va="top", fontsize=8, color=bottom_color)
-
-    ax.set_xlim(-30, bw + 70)
-    ax.set_ylim(-90, h + 92)
-    ax.set_aspect("equal")
-    ax.axis("off")
-
-    return fig
-
-def limited_sqrt_fc(fc):
-    return min(math.sqrt(max(fc, 0.0)), 8.3)
-
-def effective_transverse_fy(fy):
-    return min(fy, 420.0)
-
-def recommended_spacing(required_spacing, spacing_limit):
-    options = [300, 275, 250, 225, 200, 180, 175, 160, 150, 140,
-               130, 125, 120, 110, 100, 90, 80, 75, 70, 60, 50]
-    target = min(required_spacing, spacing_limit)
-
-    if target <= 0:
-        return None, True
-
-    for spacing in options:
-        if spacing <= target + 1e-9:
-            return spacing, True
-
-    return options[-1], False
-
-def shear_spacing_limit(bw, d, h, Vs, fc):
-    sqrt_fc = limited_sqrt_fc(fc)
-    threshold = 0.33 * sqrt_fc * bw * d
-
-    if Vs <= threshold + 1e-9:
-        return min(d / 2.0, 3.0 * h / 4.0, 600.0)
-
-    return min(d / 4.0, 3.0 * h / 8.0, 300.0)
-
-def build_torsion_bar_positions(bw, h, cover, stirrup, db_torsion, n_bars):
-    if n_bars <= 0:
-        return []
-
-    x_left = cover + stirrup + db_torsion / 2.0
-    x_right = bw - cover - stirrup - db_torsion / 2.0
-    y_bottom = cover + stirrup + db_torsion / 2.0
-    y_top = h - cover - stirrup - db_torsion / 2.0
-
-    positions = [
-        (x_left, y_top),
-        (x_right, y_top),
-        (x_right, y_bottom),
-        (x_left, y_bottom)
-    ]
-
-    if n_bars <= 4:
-        return positions[:n_bars]
-
-    extra = n_bars - 4
-    side_order = ["top", "bottom", "left", "right"]
-    side_counts = {name: 0 for name in side_order}
-
-    for i in range(extra):
-        side_counts[side_order[i % len(side_order)]] += 1
-
-    def split_line(start, end, count):
-        if count <= 0:
-            return []
-        step = (end - start) / (count + 1)
-        return [start + step * (i + 1) for i in range(count)]
-
-    for x in split_line(x_left, x_right, side_counts["top"]):
-        positions.append((x, y_top))
-    for x in split_line(x_left, x_right, side_counts["bottom"]):
-        positions.append((x, y_bottom))
-    for y in split_line(y_bottom, y_top, side_counts["left"]):
-        positions.append((x_left, y))
-    for y in split_line(y_bottom, y_top, side_counts["right"]):
-        positions.append((x_right, y))
-
-    return positions
-
-def build_torsion_bar_longitudinal_levels(
-    bw, h, cover, stirrup, db_torsion, n_bars
-):
-    positions = build_torsion_bar_positions(
-        bw, h, cover, stirrup, db_torsion, n_bars
-    )
-    if not positions:
-        return []
-
-    y_bottom = cover + stirrup + db_torsion / 2.0
-    y_top = h - cover - stirrup - db_torsion / 2.0
-    y_span = y_top - y_bottom
-    y_groups = {}
-
-    for _, y in positions:
-        key = round(y, 6)
-        if key not in y_groups:
-            y_groups[key] = {"y": y, "count": 0}
-        y_groups[key]["count"] += 1
-
-    levels = []
-    for item in sorted(y_groups.values(), key=lambda row: row["y"], reverse=True):
-        if abs(y_span) <= 1e-9:
-            relative_y = 0.5
-        else:
-            relative_y = (item["y"] - y_bottom) / y_span
-        levels.append({
-            "relative_y": relative_y,
-            "count": item["count"]
-        })
-
-    return levels
-
-def draw_shear_torsion_section_figure(zone, bw, h, cover, stirrup, db_torsion):
-    fig, ax = plt.subplots(figsize=(4.8, 6.2))
-    stirrup_use = zone.get("stirrup_design_dia", stirrup)
-
-    if zone["status"] == "GEOMETRI TIDAK VALID":
-        ax.text(0.5, 0.5, "Geometri inti sengkang\n tidak valid",
-                ha="center", va="center", fontsize=11, fontweight="bold")
-        ax.axis("off")
-        return fig
-
-    ax.add_patch(Rectangle((0, 0), bw, h, fill=False, lw=1.4, color="black"))
-    ax.add_patch(Rectangle((cover, cover),
-                           bw - 2 * cover,
-                           h - 2 * cover,
-                           fill=False, lw=0.9, ls="--", color="#7f8c8d"))
-
-    stirrup_x = cover + stirrup_use / 2.0
-    stirrup_y = cover + stirrup_use / 2.0
-    stirrup_w = bw - 2.0 * stirrup_x
-    stirrup_h = h - 2.0 * stirrup_y
-    stirrup_color = "#c0392b" if zone["torsion_required"] else "#2c3e50"
-    ax.add_patch(Rectangle((stirrup_x, stirrup_y),
-                           stirrup_w,
-                           stirrup_h,
-                           fill=False, lw=2.2, color=stirrup_color))
-
-    if zone["torsion_required"]:
-        positions = build_torsion_bar_positions(
-            bw, h, cover, stirrup_use, db_torsion, zone["n_long_req"]
-        )
-        for x, y in positions:
-            ax.add_patch(Circle((x, y), db_torsion / 2.0, color="#d35400"))
-
-        ax.text(bw / 2.0, h + 48, zone["stirrup_text"],
-                ha="center", va="bottom", fontsize=8,
-                color=stirrup_color, fontweight="bold")
-        ax.text(bw / 2.0, h + 32, zone["longitudinal_text"],
-                ha="center", va="bottom", fontsize=8, color="#d35400")
-        ax.text(bw / 2.0, h + 16, f"Aoh = {zone['Aoh']:.0f} mm2 ; ph = {zone['ph']:.0f} mm",
-                ha="center", va="bottom", fontsize=8)
-    else:
-        ax.text(bw / 2.0, h + 38, zone["stirrup_text"],
-                ha="center", va="bottom", fontsize=8,
-                color=stirrup_color, fontweight="bold")
-        ax.text(bw / 2.0, h + 20, "Torsi diabaikan / hanya kontrol geser",
-                ha="center", va="bottom", fontsize=8)
-
-    ax.annotate(
-        "", xy=(0, -28), xytext=(bw, -28),
-        arrowprops=dict(arrowstyle="<->", lw=0.9, color="black")
-    )
-    ax.text(bw / 2.0, -42, f"bw = {bw:.0f} mm",
-            ha="center", va="top", fontsize=8)
-
-    ax.annotate(
-        "", xy=(bw + 30, 0), xytext=(bw + 30, h),
-        arrowprops=dict(arrowstyle="<->", lw=0.9, color="black")
-    )
-    ax.text(bw + 42, h / 2.0, f"h = {h:.0f} mm",
-            rotation=90, ha="left", va="center", fontsize=8)
-
-    ax.text(bw / 2.0, -62, f"Status: {zone['status']}",
-            ha="center", va="top", fontsize=8, fontweight="bold")
-
-    ax.set_xlim(-28, bw + 72)
-    ax.set_ylim(-90, h + 72)
-    ax.set_aspect("equal")
-    ax.axis("off")
-
-    return fig
-
-def shear_torsion_summary_markdown(zones):
-    markdown = "| Zona | Vu (kN) | Tu input (kN.m) | Tu desain (kN.m) | Rezim | Transversal | Longitudinal Torsi | Status |\n"
-    markdown += "|---|---:|---:|---:|---|---|---|---|\n"
-
-    for zone in zones:
-        markdown += (
-            f"| {zone['title']} | "
-            f"{zone['Vu']:.2f} | "
-            f"{zone['Tu']:.2f} | "
-            f"{zone.get('Tu_design', 0.0):.2f} | "
-            f"{zone['torsion_regime']} | "
-            f"{zone['stirrup_text']} | "
-            f"{zone['longitudinal_text']} | "
-            f"{zone['status']} |\n"
-        )
-
-    return markdown
-
-def anchored_spacing_positions(start, end, spacing, anchor="start"):
-    if spacing is None or spacing <= 0 or end <= start:
-        return []
-
-    positions = []
-    if anchor == "end":
-        x = end
-        while x >= start - 1e-9:
-            positions.append(x)
-            x -= spacing
-        if positions and positions[-1] > start + 1e-9:
-            positions.append(start)
-        positions = sorted(positions)
-    else:
-        x = start
-        while x <= end + 1e-9:
-            positions.append(x)
-            x += spacing
-        if positions and positions[-1] < end - 1e-9:
-            positions.append(end)
-
-    unique_positions = []
-    for pos in positions:
-        if not unique_positions or abs(pos - unique_positions[-1]) > 1e-6:
-            unique_positions.append(pos)
-
-    return unique_positions
-
-def compact_stirrup_label(zone, title):
-    stirrup_dia = zone.get("stirrup_design_dia", 0)
-    if zone["status"] == "GEOMETRI TIDAK VALID":
-        return f"{title}\nGeometri tidak valid"
-    if zone["spacing_use"] is None:
-        return f"{title}\nTidak diwajibkan"
-    return f"{title}\n2 kaki D{stirrup_dia:.0f}-{zone['spacing_use']:.0f}"
-
-def transverse_design_mode_label(mode):
-    return (
-        "Spasi target + desain ulang"
-        if mode == "target_spacing"
-        else "Otomatis dari kebutuhan"
-    )
-
-def select_representative_torsion_zone(zones):
-    valid_zones = [zone for zone in zones if zone["status"] != "GEOMETRI TIDAK VALID"]
-    if not valid_zones:
-        return zones[0]
-
-    return max(
-        valid_zones,
-        key=lambda zone: (
-            zone.get("Tu_design", 0.0),
-            zone.get("Al_req", 0.0),
-            zone.get("total_req_per_s", 0.0)
-        )
-    )
-
-def draw_shear_torsion_longitudinal_detail_figure(
-    Ln, Ltump, xR1, zones, bw, h, cover, stirrup
-):
-    fig, ax = plt.subplots(figsize=(15, 4.6))
-
-    y0 = 1.45
-    depth = 0.52
-    stirrup_y_bottom = y0 + 0.10
-    stirrup_y_top = y0 + depth - 0.10
-    torsion_label_y = y0 - 0.14
-    torsion_color = "#d35400"
-    zone_specs = [
-        (0.0, Ltump, zones[0], "#f8d7da", "#c0392b", "Daerah tumpuan kiri"),
-        (Ltump, xR1, zones[1], "#d6eaf8", "#1f5fa8", "Daerah lapangan"),
-        (xR1, Ln, zones[2], "#f8d7da", "#c0392b", "Daerah tumpuan kanan")
-    ]
-
-    ax.add_patch(Rectangle((0, y0), Ln, depth, fill=False, lw=1.25, color="black"))
-
-    all_positions = []
-    for index, (start, end, zone, _, _, _) in enumerate(zone_specs):
-        anchor = "end" if index == 2 else "start"
-        all_positions.extend(
-            anchored_spacing_positions(start, end, zone["spacing_use"], anchor=anchor)
-        )
-
-    stirrup_positions = []
-    for pos in sorted(all_positions):
-        if not stirrup_positions or abs(pos - stirrup_positions[-1]) > 1e-6:
-            stirrup_positions.append(pos)
-
-    for x in stirrup_positions:
-        ax.plot([x, x], [stirrup_y_bottom, stirrup_y_top],
-                lw=0.8, color="#4f4f4f")
-
-    ax.text(Ln / 2.0, y0 + depth + 0.45,
-            "DETAIL PENULANGAN GESER DAN TORSI - TAMPAK MEMANJANG",
-            ha="center", va="bottom", fontsize=11, fontweight="bold")
-    ax.text(Ln / 2.0, y0 + depth + 0.29,
-            "Garis oranye mengikuti elevasi distribusi batang pada potongan",
-            ha="center", va="bottom", fontsize=8.2, color=torsion_color)
-
-    band_y = y0 + depth + 0.10
-    band_h = 0.18
-
-    for start, end, zone, fill_color, text_color, title in zone_specs:
-        if end - start <= 1e-9:
-            continue
-
-        ax.add_patch(Rectangle((start, band_y), end - start, band_h,
-                               facecolor=fill_color, edgecolor="none", alpha=0.9))
-
-        if zone["status"] == "GEOMETRI TIDAK VALID":
-            text = f"{title}\nGeometri tidak valid"
-        elif zone["spacing_use"] is None:
-            text = f"{title}\nSengkang tidak diwajibkan"
-        else:
-            text = f"{title}\nD{zone['stirrup_design_dia']:.0f}-{zone['spacing_use']:.0f}"
-
-        ax.text((start + end) / 2.0, band_y + band_h / 2.0, text,
-                ha="center", va="center", fontsize=8, fontweight="bold",
-                color=text_color)
-
-        if zone["torsion_required"] and zone["n_long_req"] > 0:
-            stirrup_use = zone.get("stirrup_design_dia", stirrup)
-            levels = build_torsion_bar_longitudinal_levels(
-                bw, h, cover, stirrup_use, zone["db_torsion"], zone["n_long_req"]
-            )
-            for level in levels:
-                yy = stirrup_y_bottom + level["relative_y"] * (stirrup_y_top - stirrup_y_bottom)
-                ax.plot([start, end], [yy, yy],
-                        lw=1.55, color=torsion_color, solid_capstyle="butt")
-            ax.text((start + end) / 2.0, torsion_label_y,
-                    f"Long. torsi\n{zone['longitudinal_text']}",
-                    ha="center", va="top", fontsize=7.3, color=torsion_color)
-
-    for boundary in [Ltump, xR1]:
-        if 0 < boundary < Ln:
-            ax.plot([boundary, boundary], [y0 - 0.02, band_y + band_h],
-                    lw=0.8, ls="--", color="#a9a9a9")
-
-    dim_y = 0.82
-    dim_specs = [
-        (0.0, Ltump, f"1. daerah tumpuan = {Ltump:.0f} mm"),
-        (Ltump, xR1, f"2. daerah lapangan = {max(xR1 - Ltump, 0):.0f} mm"),
-        (xR1, Ln, f"3. daerah tumpuan = {max(Ln - xR1, 0):.0f} mm")
-    ]
-
-    for start, end, text in dim_specs:
-        if end - start <= 1e-9:
-            continue
-        ax.annotate(
-            "", xy=(start, dim_y), xytext=(end, dim_y),
-            arrowprops=dict(arrowstyle="<->", lw=0.95, color="black")
-        )
-        ax.text((start + end) / 2.0, dim_y - 0.08, text,
-                ha="center", va="top", fontsize=8)
-
-    note_y = 0.26
-    note_texts = []
-    for _, _, zone, _, _, title in zone_specs:
-        if zone["spacing_use"] is None:
-            note = f"{title}: tidak diwajibkan"
-        else:
-            note = f"{title}: 2 kaki D{zone['stirrup_design_dia']:.0f}-{zone['spacing_use']:.0f}"
-        note_texts.append(note)
-
-    ax.text(Ln / 2.0, note_y,
-            " | ".join(note_texts),
-            ha="center", va="center", fontsize=8.2, color="#2f2f2f")
-
-    ax.set_xlim(-250, Ln + 250)
-    ax.set_ylim(0.0, 2.45)
-    ax.axis("off")
-    return fig
-
-def draw_torsion_detail_note_figure(zone, bw, h, cover, stirrup, db_torsion):
-    fig, ax = plt.subplots(figsize=(5.0, 5.2))
-    stirrup_use = zone.get("stirrup_design_dia", stirrup)
-
-    ax.text(0.5, 1.02, "KETERANGAN PENULANGAN TORSI",
-            transform=ax.transAxes, ha="center", va="bottom",
-            fontsize=11, fontweight="bold")
-
-    if zone["status"] == "GEOMETRI TIDAK VALID":
-        ax.text(0.5, 0.5, "Geometri tidak valid",
-                transform=ax.transAxes, ha="center", va="center",
-                fontsize=11, fontweight="bold")
-        ax.axis("off")
-        return fig
-
-    if not zone["torsion_required"]:
-        ax.text(0.5, 0.58, "Tulangan torsi tidak diperlukan\npada kondisi input saat ini",
-                transform=ax.transAxes, ha="center", va="center",
-                fontsize=11, fontweight="bold")
-        ax.text(0.5, 0.32, f"Zona representatif: {zone['title']}",
-                transform=ax.transAxes, ha="center", va="center", fontsize=9)
-        ax.axis("off")
-        return fig
-
-    positions = build_torsion_bar_positions(
-        bw, h, cover, stirrup_use, db_torsion, zone["n_long_req"]
-    )
-    stirrup_x = cover + stirrup_use / 2.0
-    stirrup_y = cover + stirrup_use / 2.0
-    stirrup_w = bw - 2.0 * stirrup_x
-    stirrup_h = h - 2.0 * stirrup_y
-
-    ax.add_patch(Rectangle((0, 0), bw, h, fill=False, lw=1.35, color="black"))
-    ax.add_patch(Rectangle((stirrup_x, stirrup_y),
-                           stirrup_w, stirrup_h,
-                           fill=False, lw=2.2, color="#c0392b"))
-
-    for x, y in positions:
-        ax.add_patch(Circle((x, y), db_torsion / 2.0, color="#f1c40f", ec="#a93226", lw=0.8))
-
-    label_bbox = dict(boxstyle="round,pad=0.22", fc="white", ec="none", alpha=0.96)
-    right_edge = max(x for x, _ in positions)
-    right_side_positions = [pos for pos in positions if abs(pos[0] - right_edge) <= 1e-6]
-    if right_side_positions:
-        torsion_target = min(right_side_positions, key=lambda pos: abs(pos[1] - h * 0.54))
-    else:
-        torsion_target = positions[0]
-
-    ax.annotate(
-        "Sengkang tertutup",
-        xy=(bw - stirrup_x, h / 2.0),
-        xytext=(bw + 90, h * 0.60),
-        fontsize=8.5, color="#1f5fa8",
-        ha="left", va="center",
-        bbox=label_bbox,
-        arrowprops=dict(
-            arrowstyle="->",
-            color="#1f5fa8",
-            lw=1.0,
-            shrinkA=4,
-            shrinkB=3,
-            connectionstyle="arc3,rad=0.10"
-        )
-    )
-    ax.annotate(
-        "Tulangan longitudinal torsi\ndistribusi keliling",
-        xy=torsion_target,
-        xytext=(bw + 90, h * 0.44),
-        fontsize=8.5, color="#c0392b",
-        ha="left", va="center",
-        bbox=label_bbox,
-        arrowprops=dict(
-            arrowstyle="->",
-            color="#c0392b",
-            lw=1.0,
-            shrinkA=4,
-            shrinkB=3,
-            connectionstyle="arc3,rad=-0.12"
-        )
-    )
-
-    info_pairs = [
-        ("Zona representatif", zone["title"]),
-        ("Transversal", zone["stirrup_text"]),
-        ("Longitudinal", zone["longitudinal_text"]),
-        ("Tu desain", f"{zone['Tu_design']:.2f} kN.m")
-    ]
-    info_label_x = bw / 2.0 - 20
-    info_value_x = bw / 2.0 - 14
-    info_y_start = -54
-    info_gap = 25
-    for idx, (label, value) in enumerate(info_pairs):
-        yy = info_y_start - idx * info_gap
-        ax.text(info_label_x, yy, label,
-                ha="right", va="top", fontsize=8.2)
-        ax.text(info_value_x, yy, f": {value}",
-                ha="left", va="top", fontsize=8.2)
-
-    ax.set_xlim(-20, bw + 235)
-    ax.set_ylim(-145, h + 25)
-    ax.set_aspect("equal")
-    ax.axis("off")
-    return fig
-
-def design_shear_torsion_zone(title, Vu, Tu, bw, h, cover, stirrup, fc, fy,
-                              flexure_zone, db_torsion, torsion_mode,
-                              transverse_design_mode="auto", spacing_target=None):
-    standard_transverse_diameters = sorted({8, 10, 13, 16, int(stirrup)})
-
-    def evaluate_with_stirrup(stirrup_design_dia, spacing_override=None):
-        phi = 0.75
-        theta_deg = 45.0
-        cot_theta = 1.0
-        sqrt_fc = limited_sqrt_fc(fc)
-        fyt = effective_transverse_fy(fy)
-        fyl = effective_transverse_fy(fy)
-        d = max(flexure_zone["d"] - (stirrup_design_dia - stirrup), 1.0)
-
-        core_b = bw - 2.0 * cover - stirrup_design_dia
-        core_h = h - 2.0 * cover - stirrup_design_dia
-        geometry_ok = core_b > 0.0 and core_h > 0.0
-
-        if not geometry_ok:
-            return {
-                "title": title,
-                "Vu": Vu,
-                "Tu": Tu,
-                "d": d,
-                "phi": phi,
-                "theta_deg": theta_deg,
-                "torsion_mode": torsion_mode,
-                "transverse_design_mode": transverse_design_mode,
-                "spacing_target": spacing_override,
-                "spacing_auto": None,
-                "spacing_use": spacing_override,
-                "spacing_fits": False,
-                "Tu_design": 0.0,
-                "Tu_reduction": 0.0,
-                "torsion_regime": "Tidak dapat dihitung",
-                "stirrup_design_dia": stirrup_design_dia,
-                "base_stirrup_dia": stirrup,
-                "stirrup_text": "-",
-                "longitudinal_text": "-",
-                "status": "GEOMETRI TIDAK VALID",
-                "notes": [
-                    "Dimensi inti sengkang tidak valid. Periksa bw, h, cover, dan diameter sengkang."
-                ]
-            }
-
-        As_stirrup_bar = area_bar(stirrup_design_dia)
-        Av_closed = 2.0 * As_stirrup_bar
-        At_leg = As_stirrup_bar
-
-        Vu_n = Vu * 1000.0
-        Tu_nmm = Tu * 1e6
-
-        Acp = bw * h
-        pcp = 2.0 * (bw + h)
-        Aoh = core_b * core_h
-        Ao = 0.85 * Aoh
-        ph = 2.0 * (core_b + core_h)
-
-        Vc = 0.17 * sqrt_fc * bw * d
-        phiVc = phi * Vc
-        Vs_req = max(Vu_n / phi - Vc, 0.0)
-        Av_strength_per_s = Vs_req / (fyt * d) if Vs_req > 0.0 else 0.0
-
-        Av_min_per_s = max(
-            0.062 * sqrt_fc * bw / fyt,
-            0.35 * bw / fyt
-        )
-        shear_min_required = Vu_n > 0.5 * phiVc
-        Av_req_per_s = max(
-            Av_strength_per_s,
-            Av_min_per_s if shear_min_required else 0.0
-        )
-
-        Tth = 0.083 * sqrt_fc * (Acp ** 2) / pcp
-        Tcr = 0.33 * sqrt_fc * (Acp ** 2) / pcp
-        phiTth = phi * Tth
-        phiTcr = phi * Tcr
-
-        torsion_required = Tu_nmm >= phiTth
-        if not torsion_required:
-            Tu_design_nmm = 0.0
-        elif torsion_mode == "compatibility":
-            Tu_design_nmm = min(Tu_nmm, phiTcr)
-        else:
-            Tu_design_nmm = Tu_nmm
-
-        torsion_strength_required = Tu_design_nmm >= phiTcr - 1e-9
-
-        At_strength_per_s = (
-            Tu_design_nmm / (phi * 2.0 * Ao * fyt * cot_theta)
-            if torsion_strength_required else 0.0
-        )
-        combined_min_per_s = Av_min_per_s if torsion_required else 0.0
-
-        if torsion_required:
-            total_strength_per_s = Av_strength_per_s + 2.0 * At_strength_per_s
-            total_req_per_s = max(total_strength_per_s, combined_min_per_s)
-            spacing_calc = (
-                (Av_closed + 2.0 * At_leg) / total_req_per_s
-                if total_req_per_s > 0.0 else math.inf
-            )
-        else:
-            total_strength_per_s = Av_strength_per_s
-            total_req_per_s = Av_req_per_s
-            spacing_calc = (
-                Av_closed / total_req_per_s if total_req_per_s > 0.0 else math.inf
-            )
-
-        shear_s_max = (
-            shear_spacing_limit(bw, d, h, Vs_req, fc)
-            if total_req_per_s > 0.0 else math.inf
-        )
-        torsion_s_max = min(ph / 8.0, 300.0) if torsion_required else math.inf
-        spacing_limit = min(shear_s_max, torsion_s_max)
-
-        spacing_auto = None
-        if total_req_per_s > 0.0:
-            spacing_auto, _ = recommended_spacing(spacing_calc, spacing_limit)
-
-        if spacing_override is None:
-            spacing_use = spacing_auto
-            spacing_fits = True
-        else:
-            spacing_use = spacing_override
-            spacing_fits = (
-                spacing_limit == math.inf or
-                spacing_use <= spacing_limit + 1e-9
-            )
-
-        if spacing_use is None:
-            Av_prov_per_s = 0.0
-            At_prov_per_s = 0.0
-            total_prov_per_s = 0.0
-        else:
-            Av_prov_per_s = Av_closed / spacing_use
-            At_prov_per_s = At_leg / spacing_use if torsion_required else 0.0
-            total_prov_per_s = Av_prov_per_s + 2.0 * At_prov_per_s
-
-        Vs_prov = Av_prov_per_s * fyt * d
-        phiVn = phi * (Vc + Vs_prov)
-
-        At_for_almin = max(At_strength_per_s, 0.175 * bw / fyt) if torsion_required else 0.0
-        Al_strength_req = (
-            At_strength_per_s * ph * (fyt / fyl) * (cot_theta ** 2)
-            if torsion_strength_required else 0.0
-        )
-
-        if torsion_required:
-            Al_min_a = 0.42 * sqrt_fc * Acp / fyl - At_for_almin * ph * (fyt / fyl)
-            Al_min_b = 0.42 * sqrt_fc * Acp / fyl - 0.175 * bw * ph / fyl
-            Al_min_req = max(0.0, min(Al_min_a, Al_min_b))
-        else:
-            Al_min_a = 0.0
-            Al_min_b = 0.0
-            Al_min_req = 0.0
-
-        Al_req = max(Al_strength_req, Al_min_req)
-
-        torsion_bar_area = area_bar(db_torsion)
-        if torsion_required:
-            n_long_req = max(
-                4,
-                math.ceil(Al_req / torsion_bar_area) if torsion_bar_area > 0.0 else 4,
-                math.ceil(ph / 300.0)
-            )
-            if n_long_req % 2 != 0:
-                n_long_req += 1
-            Al_prov = n_long_req * torsion_bar_area
-            approx_long_spacing = ph / n_long_req
-        else:
-            n_long_req = 0
-            Al_prov = 0.0
-            approx_long_spacing = 0.0
-
-        Tn_transverse = (
-            2.0 * Ao * At_prov_per_s * fyt * cot_theta
-            if torsion_required and spacing_use is not None else 0.0
-        )
-        Tn_longitudinal = (
-            2.0 * Ao * Al_prov * fyl / (ph * cot_theta)
-            if torsion_required and n_long_req > 0 else 0.0
-        )
-        phiTn = (
-            phi * min(Tn_transverse, Tn_longitudinal)
-            if torsion_required else 0.0
-        )
-
-        stress_left = Vu_n / (bw * d) + Tu_design_nmm * ph / (1.7 * (Aoh ** 2))
-        stress_right = phi * (Vc / (bw * d) + 0.66 * sqrt_fc)
-        section_ok = stress_left <= stress_right + 1e-9
-
-        if torsion_mode == "compatibility" and Tu_nmm > phiTcr and torsion_required:
-            torsion_regime = "Torsi kompatibilitas, Tu direduksi"
-        elif torsion_strength_required:
-            torsion_regime = "Torsi kekuatan"
-        elif torsion_required:
-            torsion_regime = "Torsi minimum"
-        else:
-            torsion_regime = "Torsi dapat diabaikan"
-
-        shear_ok = phiVn + 1e-6 >= Vu_n
-        longitudinal_ok = (
-            not torsion_required or
-            (
-                Al_prov + 1e-6 >= Al_req and
-                approx_long_spacing <= 300.0 + 1e-9 and
-                n_long_req >= 4
-            )
-        )
-        torsion_ok = (
-            not torsion_strength_required or
-            phiTn + 1e-6 >= Tu_design_nmm
-        )
-
-        if not section_ok:
-            status = "PERLU PERBESAR DIMENSI PENAMPANG"
-        elif not spacing_fits:
-            status = "SPASI TARGET MELAMPAUI BATAS"
-        elif not shear_ok or not longitudinal_ok or not torsion_ok:
-            status = "TIDAK AMAN"
-        else:
-            status = "AMAN"
-
-        if spacing_use is None:
-            stirrup_text = "Tidak diwajibkan oleh kekuatan"
-        elif torsion_required:
-            stirrup_text = f"Sengkang tertutup 2 kaki D{stirrup_design_dia}-{spacing_use:.0f} mm"
-        else:
-            stirrup_text = f"Sengkang 2 kaki D{stirrup_design_dia}-{spacing_use:.0f} mm"
-
-        if torsion_required:
-            longitudinal_text = f"{n_long_req}D{db_torsion} tambahan"
-        else:
-            longitudinal_text = "Tidak diperlukan"
-
-        notes = [
-            "Desain diasumsikan untuk balok nonprategang, beton normal, dan sengkang tertutup 2 kaki.",
-            "Sudut diagonal tekan torsi diambil theta = 45 derajat sesuai pendekatan konservatif untuk komponen nonprategang.",
-            "Tulangan longitudinal torsi dihitung sebagai tulangan tambahan dan tidak digabung ke modul lentur agar bagian lentur tetap terpisah."
-        ]
-        if torsion_mode == "compatibility":
-            notes.append(
-                "Mode torsi kompatibilitas mengizinkan Tu desain direduksi sampai phiTcr bila redistribusi gaya internal setelah retak torsi dapat dibenarkan."
-            )
-        else:
-            notes.append(
-                "Mode torsi keseimbangan menggunakan Tu penuh sebagai dasar desain torsi."
-            )
-        if torsion_required:
-            notes.append(
-                f"Tu input = {Tu:.2f} kN.m dan Tu desain = {Tu_design_nmm / 1e6:.2f} kN.m."
-            )
-        if spacing_override is not None:
-            notes.append(
-                f"Spasi target pengguna = {spacing_override:.0f} mm dengan diameter sengkang hasil evaluasi D{stirrup_design_dia:.0f}."
-            )
-            if total_req_per_s > 0.0 and spacing_auto is not None:
-                notes.append(
-                    f"Spasi otomatis dari kebutuhan untuk diameter ini adalah sekitar {spacing_auto:.0f} mm."
-                )
-            if not spacing_fits and spacing_limit != math.inf:
-                notes.append(
-                    f"Spasi target melampaui batas maksimum yang diizinkan, yaitu {spacing_limit:.0f} mm."
-                )
-
-        return {
-            "title": title,
-            "Vu": Vu,
-            "Tu": Tu,
-            "Tu_design": Tu_design_nmm / 1e6,
-            "Tu_reduction": (Tu_nmm - Tu_design_nmm) / 1e6,
-            "phi": phi,
-            "theta_deg": theta_deg,
-            "torsion_mode": torsion_mode,
-            "transverse_design_mode": transverse_design_mode,
-            "spacing_target": spacing_override,
-            "spacing_auto": spacing_auto,
-            "stirrup_design_dia": stirrup_design_dia,
-            "base_stirrup_dia": stirrup,
-            "sqrt_fc": sqrt_fc,
-            "fyt": fyt,
-            "fyl": fyl,
-            "d": d,
-            "Acp": Acp,
-            "pcp": pcp,
-            "Aoh": Aoh,
-            "Ao": Ao,
-            "ph": ph,
-            "Vc": Vc,
-            "phiVc": phiVc,
-            "Vs_req": Vs_req,
-            "Vs_prov": Vs_prov,
-            "phiVn": phiVn,
-            "Av_strength_per_s": Av_strength_per_s,
-            "Av_min_per_s": Av_min_per_s,
-            "Av_req_per_s": Av_req_per_s,
-            "Tth": Tth,
-            "phiTth": phiTth,
-            "Tcr": Tcr,
-            "phiTcr": phiTcr,
-            "torsion_required": torsion_required,
-            "torsion_strength_required": torsion_strength_required,
-            "torsion_regime": torsion_regime,
-            "At_strength_per_s": At_strength_per_s,
-            "At_for_almin": At_for_almin,
-            "combined_min_per_s": combined_min_per_s,
-            "total_strength_per_s": total_strength_per_s,
-            "total_req_per_s": total_req_per_s,
-            "spacing_calc": spacing_calc,
-            "shear_s_max": shear_s_max,
-            "torsion_s_max": torsion_s_max,
-            "spacing_limit": spacing_limit,
-            "spacing_use": spacing_use,
-            "spacing_fits": spacing_fits,
-            "Av_prov_per_s": Av_prov_per_s,
-            "At_prov_per_s": At_prov_per_s,
-            "total_prov_per_s": total_prov_per_s,
-            "Al_strength_req": Al_strength_req,
-            "Al_min_a": Al_min_a,
-            "Al_min_b": Al_min_b,
-            "Al_min_req": Al_min_req,
-            "Al_req": Al_req,
-            "db_torsion": db_torsion,
-            "n_long_req": n_long_req,
-            "Al_prov": Al_prov,
-            "approx_long_spacing": approx_long_spacing,
-            "Tn_transverse": Tn_transverse,
-            "Tn_longitudinal": Tn_longitudinal,
-            "phiTn": phiTn,
-            "stress_left": stress_left,
-            "stress_right": stress_right,
-            "section_ok": section_ok,
-            "shear_ok": shear_ok,
-            "longitudinal_ok": longitudinal_ok,
-            "torsion_ok": torsion_ok,
-            "status": status,
-            "stirrup_text": stirrup_text,
-            "longitudinal_text": longitudinal_text,
-            "redesign_selected": False,
-            "notes": notes
-        }
-
-    if transverse_design_mode == "target_spacing" and spacing_target is not None:
-        candidate_diams = [dia for dia in standard_transverse_diameters if dia >= stirrup]
-        if not candidate_diams:
-            candidate_diams = [stirrup]
-
-        evaluated = [
-            evaluate_with_stirrup(dia, spacing_target)
-            for dia in candidate_diams
-        ]
-        safe_options = [zone for zone in evaluated if zone["status"] == "AMAN"]
-
-        if safe_options:
-            selected = safe_options[0]
-            selected["redesign_selected"] = True
-            selected["notes"].append(
-                "Mode spasi target aktif. Sistem memilih diameter sengkang minimum yang masih menghasilkan status aman, dimulai dari diameter awal yang dipilih pengguna."
-            )
-            return selected
-
-        selected = max(
-            evaluated,
-            key=lambda zone: (
-                zone.get("section_ok", False),
-                zone.get("spacing_fits", False),
-                zone.get("phiVn", 0.0) + zone.get("phiTn", 0.0),
-                zone.get("stirrup_design_dia", 0.0)
-            )
-        )
-        selected["redesign_selected"] = True
-        selected["notes"].append(
-            "Spasi target belum dapat dibuat aman dengan diameter sengkang standar yang tersedia. Gunakan spasi lebih rapat atau perbesar penampang."
-        )
-        return selected
-
-    return evaluate_with_stirrup(stirrup)
-
-def shear_torsion_report_markdown(zone, bw, h, cover, stirrup):
-    if zone["status"] == "GEOMETRI TIDAK VALID":
-        markdown = "| Parameter | Nilai |\n|---|---|\n"
-        markdown += f"| Vu | {zone['Vu']:.2f} kN |\n"
-        markdown += f"| Tu | {zone['Tu']:.2f} kN.m |\n"
-        markdown += f"| Status | {zone['status']} |\n"
-        markdown += "\n"
-        for note in zone["notes"]:
-            markdown += f"- {note}\n"
-        return markdown
-
-    def fmt(value, unit="", scale=1.0, digits=2):
-        return f"{value / scale:.{digits}f} {unit}".strip()
-
-    def fmt_or_dash(value, unit="", scale=1.0, digits=2):
-        if value is None or not math.isfinite(value):
-            return "-"
-        return fmt(value, unit, scale, digits)
-
-    rows = [
-        ("Vu", f"{zone['Vu']:.2f} kN"),
-        ("Tu input", f"{zone['Tu']:.2f} kN.m"),
-        ("Mode desain torsi", "Torsi kompatibilitas" if zone["torsion_mode"] == "compatibility" else "Torsi keseimbangan"),
-        ("Mode desain transversal", transverse_design_mode_label(zone["transverse_design_mode"])),
-        ("Tu desain", f"{zone['Tu_design']:.2f} kN.m"),
-        ("Reduksi Tu", f"{zone['Tu_reduction']:.2f} kN.m"),
-        ("Rezim torsi", zone["torsion_regime"]),
-        ("Lebar balok, bw", f"{bw:.2f} mm"),
-        ("Tinggi balok, h", f"{h:.2f} mm"),
-        ("Selimut beton", f"{cover:.2f} mm"),
-        ("Diameter sengkang awal", f"D{zone.get('base_stirrup_dia', stirrup):.0f}"),
-        ("Diameter sengkang hasil desain", f"D{zone.get('stirrup_design_dia', stirrup):.0f}"),
-        ("Diameter tulangan longitudinal torsi", f"D{zone.get('db_torsion', 0)}" if zone.get("db_torsion", 0) else "-"),
-        ("Spasi target pengguna", fmt_or_dash(zone.get("spacing_target"), "mm", digits=0)),
-        ("Spasi otomatis dari kebutuhan", fmt_or_dash(zone.get("spacing_auto"), "mm", digits=0)),
-        ("d efektif dari modul lentur", f"{zone['d']:.2f} mm"),
-        ("sqrt(fc') efektif", f"{zone['sqrt_fc']:.4f}"),
-        ("fy longitudinal efektif", f"{zone['fyl']:.2f} MPa"),
-        ("fyt transversal efektif", f"{zone['fyt']:.2f} MPa"),
-        ("Acp", f"{zone['Acp']:.2f} mm2"),
-        ("pcp", f"{zone['pcp']:.2f} mm"),
-        ("Aoh", f"{zone['Aoh']:.2f} mm2"),
-        ("Ao", f"{zone['Ao']:.2f} mm2"),
-        ("ph", f"{zone['ph']:.2f} mm"),
-        ("Vc", fmt(zone["Vc"], "kN", 1000.0)),
-        ("phiVc", fmt(zone["phiVc"], "kN", 1000.0)),
-        ("Vs perlu", fmt(zone["Vs_req"], "kN", 1000.0)),
-        ("Vs terpasang", fmt(zone["Vs_prov"], "kN", 1000.0)),
-        ("Av/s perlu untuk geser", f"{zone['Av_req_per_s']:.4f} mm2/mm"),
-        ("Av/s minimum", f"{zone['Av_min_per_s']:.4f} mm2/mm"),
-        ("At/s perlu untuk torsi", f"{zone['At_strength_per_s']:.4f} mm2/mm"),
-        ("(Av + 2At)/s minimum", f"{zone['combined_min_per_s']:.4f} mm2/mm"),
-        ("(Av + 2At)/s perlu total", f"{zone['total_req_per_s']:.4f} mm2/mm"),
-        ("Sengkang terpasang", zone["stirrup_text"]),
-        ("(Av + 2At)/s terpasang", f"{zone['total_prov_per_s']:.4f} mm2/mm"),
-        ("s hitung", fmt_or_dash(zone["spacing_calc"], "mm")),
-        ("s maksimum geser", fmt_or_dash(zone["shear_s_max"], "mm")),
-        ("s maksimum torsi", fmt_or_dash(zone["torsion_s_max"] if zone["torsion_required"] else None, "mm")),
-        ("s dipakai", fmt_or_dash(zone["spacing_use"], "mm", digits=0)),
-        ("Tth", fmt(zone["Tth"], "kN.m", 1e6)),
-        ("phiTth", fmt(zone["phiTth"], "kN.m", 1e6)),
-        ("Tcr", fmt(zone["Tcr"], "kN.m", 1e6)),
-        ("phiTcr", fmt(zone["phiTcr"], "kN.m", 1e6)),
-        ("Al perlu karena kekuatan torsi", f"{zone['Al_strength_req']:.2f} mm2"),
-        ("Al minimum (a)", f"{zone['Al_min_a']:.2f} mm2"),
-        ("Al minimum (b)", f"{zone['Al_min_b']:.2f} mm2"),
-        ("Al minimum yang dipakai", f"{zone['Al_min_req']:.2f} mm2"),
-        ("Al tambahan yang dipakai", f"{zone['Al_req']:.2f} mm2"),
-        ("Tulangan longitudinal torsi tambahan", zone["longitudinal_text"]),
-        ("Al longitudinal terpasang", f"{zone['Al_prov']:.2f} mm2"),
-        ("Perkiraan spasi keliling batang torsi", fmt_or_dash(zone["approx_long_spacing"] if zone["n_long_req"] > 0 else None, "mm")),
-        ("phiVn terpasang", fmt(zone["phiVn"], "kN", 1000.0)),
-        ("phiTn terpasang", fmt(zone["phiTn"], "kN.m", 1e6)),
-        ("Cek tegangan gabungan, lhs", f"{zone['stress_left']:.4f} MPa"),
-        ("Cek tegangan gabungan, rhs", f"{zone['stress_right']:.4f} MPa"),
-        ("Status", zone["status"])
-    ]
-
-    markdown = "| Parameter | Nilai |\n|---|---|\n"
-    for label, value in rows:
-        markdown += f"| {label} | {value} |\n"
-
-    markdown += "\n"
-    for note in zone["notes"]:
-        markdown += f"- {note}\n"
-
-    return markdown
-
-# ==========================================================
-# SIDEBAR INPUT
-# ==========================================================
-st.sidebar.header("INPUT DATA")
-
-Ln = st.sidebar.number_input("Bentang Bersih Ln (mm)",1000,50000,6000)
-bw = st.sidebar.number_input("Lebar Balok bw (mm)",150,2000,300)
-h  = st.sidebar.number_input("Tinggi Balok h (mm)",250,3000,500)
-
-cover   = st.sidebar.number_input("Selimut Beton (mm)",20,100,40)
-stirrup = st.sidebar.number_input("Diameter Sengkang (mm)",8,16,10)
-
-fc = st.sidebar.number_input("f'c (MPa)",17.0,70.0,25.0)
-fy = st.sidebar.number_input("fy (MPa)",240.0,700.0,420.0)
-
-MuL = st.sidebar.number_input("Mu Tumpuan Kiri (kN.m)",0.0,100000.0,300.0)
-MuM = st.sidebar.number_input("Mu Lapangan (kN.m)",0.0,100000.0,300.0)
-MuR = st.sidebar.number_input("Mu Tumpuan Kanan (kN.m)",0.0,100000.0,300.0)
-
-db = st.sidebar.selectbox(
-    "Diameter Tulangan (mm)",
-    [13,16,19,22,25,29,32],
-    index=4
-)
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("INPUT GESER & TORSI")
-st.sidebar.caption("Modul ini terpisah dari penulangan lentur yang sudah ada.")
-
-torsion_mode = st.sidebar.radio(
-    "Mode Desain Torsi",
-    [
-        "equilibrium",
-        "compatibility"
-    ],
-    format_func=lambda x: (
-        "Torsi Keseimbangan: Tu dipakai penuh"
-        if x == "equilibrium"
-        else "Torsi Kompatibilitas: Tu boleh direduksi ke phiTcr"
-    )
-)
-
-transverse_design_mode = st.sidebar.radio(
-    "Mode Desain Transversal",
-    [
-        "auto",
-        "target_spacing"
-    ],
-    format_func=transverse_design_mode_label
-)
-
-VuL = st.sidebar.number_input("Vu Tumpuan Kiri (kN)", 0.0, 100000.0, 150.0)
-VuM = st.sidebar.number_input("Vu Lapangan (kN)", 0.0, 100000.0, 120.0)
-VuR = st.sidebar.number_input("Vu Tumpuan Kanan (kN)", 0.0, 100000.0, 150.0)
-
-TuL = st.sidebar.number_input("Tu Tumpuan Kiri (kN.m)", 0.0, 100000.0, 0.0)
-TuM = st.sidebar.number_input("Tu Lapangan (kN.m)", 0.0, 100000.0, 0.0)
-TuR = st.sidebar.number_input("Tu Tumpuan Kanan (kN.m)", 0.0, 100000.0, 0.0)
-
-db_torsion = st.sidebar.selectbox(
-    "Diameter Tulangan Longitudinal Torsi (mm)",
-    [10,13,16,19,22,25,29,32],
-    index=1
-)
-
-if transverse_design_mode == "target_spacing":
-    st.sidebar.caption(
-        "Masukkan spasi target. Sistem akan memilih diameter sengkang minimum yang aman dari daftar standar mulai dari diameter awal."
-    )
-    s_target_L = st.sidebar.number_input("Spasi Target Tumpuan Kiri (mm)", 50.0, 600.0, 150.0, 5.0)
-    s_target_M = st.sidebar.number_input("Spasi Target Lapangan (mm)", 50.0, 600.0, 200.0, 5.0)
-    s_target_R = st.sidebar.number_input("Spasi Target Tumpuan Kanan (mm)", 50.0, 600.0, 150.0, 5.0)
-else:
-    s_target_L = None
-    s_target_M = None
-    s_target_R = None
-
-# ==========================================================
-# CALCULATION
-# ==========================================================
-L = design_zone("TUMPUAN KIRI", MuL, bw, h, cover, stirrup, db, fc, fy, "top")
-M = design_zone("LAPANGAN", MuM, bw, h, cover, stirrup, db, fc, fy, "bottom")
-R = design_zone("TUMPUAN KANAN", MuR, bw, h, cover, stirrup, db, fc, fy, "top")
-
-SL = design_shear_torsion_zone(
-    "TUMPUAN KIRI", VuL, TuL, bw, h, cover, stirrup, fc, fy, L, db_torsion,
-    torsion_mode, transverse_design_mode, s_target_L
-)
-SM = design_shear_torsion_zone(
-    "LAPANGAN", VuM, TuM, bw, h, cover, stirrup, fc, fy, M, db_torsion,
-    torsion_mode, transverse_design_mode, s_target_M
-)
-SR = design_shear_torsion_zone(
-    "TUMPUAN KANAN", VuR, TuR, bw, h, cover, stirrup, fc, fy, R, db_torsion,
-    torsion_mode, transverse_design_mode, s_target_R
-)
-
-Lext  = 12 * db
-Lextm = 12 * db
-
-Ltump = min(0.25 * Ln + Lext, Ln/2)
-Llap  = min(0.50 * Ln + Lextm, Ln)
-
-xL1 = 0
-xL2 = Ltump
-
-xR1 = Ln - Ltump
-xR2 = Ln
-
-xM1 = (Ln - Llap) / 2
-xM2 = (Ln + Llap) / 2
-
-# ==========================================================
-# SUMMARY
-# ==========================================================
-c1,c2,c3 = st.columns(3)
-
-with c1:
-    st.subheader("TUMPUAN KIRI")
-    st.write(f"Atas = {L['n_main']}D{db}")
-    st.write(f"Bawah = {L['n_min']}D{db}")
-    st.write(f"Mu = {L['Mu']:.2f} kN.m")
-    st.write(f"phiMn terpasang = {L['phiMn']:.2f} kN.m")
-    st.write(f"Status = {L['status']}")
-
-with c2:
-    st.subheader("LAPANGAN")
-    st.write(f"Bawah = {M['n_main']}D{db}")
-    st.write(f"Atas = {M['n_min']}D{db}")
-    st.write(f"Mu = {M['Mu']:.2f} kN.m")
-    st.write(f"phiMn terpasang = {M['phiMn']:.2f} kN.m")
-    st.write(f"Status = {M['status']}")
-
-with c3:
-    st.subheader("TUMPUAN KANAN")
-    st.write(f"Atas = {R['n_main']}D{db}")
-    st.write(f"Bawah = {R['n_min']}D{db}")
-    st.write(f"Mu = {R['Mu']:.2f} kN.m")
-    st.write(f"phiMn terpasang = {R['phiMn']:.2f} kN.m")
-    st.write(f"Status = {R['status']}")
-
-with st.expander("HITUNGAN LENGKAP TUMPUAN KIRI"):
-    exp_left, exp_right = st.columns([2.2, 1.0])
-    with exp_left:
-        st.markdown(report_markdown(L, Ln, bw, h, cover, stirrup, db, fc, fy))
-    with exp_right:
-        st.write("Potongan Penulangan")
-        st.pyplot(draw_section_figure(L, bw, h, cover, stirrup, db),
-                  width="stretch")
-
-with st.expander("HITUNGAN LENGKAP LAPANGAN"):
-    exp_left, exp_right = st.columns([2.2, 1.0])
-    with exp_left:
-        st.markdown(report_markdown(M, Ln, bw, h, cover, stirrup, db, fc, fy))
-    with exp_right:
-        st.write("Potongan Penulangan")
-        st.pyplot(draw_section_figure(M, bw, h, cover, stirrup, db),
-                  width="stretch")
-
-with st.expander("HITUNGAN LENGKAP TUMPUAN KANAN"):
-    exp_left, exp_right = st.columns([2.2, 1.0])
-    with exp_left:
-        st.markdown(report_markdown(R, Ln, bw, h, cover, stirrup, db, fc, fy))
-    with exp_right:
-        st.write("Potongan Penulangan")
-        st.pyplot(draw_section_figure(R, bw, h, cover, stirrup, db),
-                  width="stretch")
-
-# ==========================================================
-# DETAIL BALOK
-# ==========================================================
-st.markdown('<div class="sec">DETAIL PENULANGAN BALOK</div>',
-            unsafe_allow_html=True)
-
-fig, ax = plt.subplots(figsize=(15,5.4))
-
-y0 = 4.0
-depth = 0.8
-stirrup_y_bottom = y0 + 0.10
-stirrup_y_top = y0 + depth - 0.10
-
-left_zone_start = 0.0
-left_zone_end = Ltump
-field_zone_start = Ltump
-field_zone_end = xR1
-right_zone_start = xR1
-right_zone_end = Ln
-
-left_stirrups = anchored_spacing_positions(
-    left_zone_start, left_zone_end, SL["spacing_use"], anchor="start"
-)
-field_stirrups = anchored_spacing_positions(
-    field_zone_start, field_zone_end, SM["spacing_use"], anchor="start"
-)
-right_stirrups = anchored_spacing_positions(
-    right_zone_start, right_zone_end, SR["spacing_use"], anchor="end"
-)
-
-stirrup_positions = []
-for pos in sorted(left_stirrups + field_stirrups + right_stirrups):
-    if not stirrup_positions or abs(pos - stirrup_positions[-1]) > 1e-6:
-        stirrup_positions.append(pos)
-
-# outline beam
-ax.add_patch(Rectangle((0,y0),Ln,depth,fill=False,lw=1.2))
-
-# stirrup lines according to shear-torsion spacing
-for x in stirrup_positions:
-    ax.plot([x, x], [stirrup_y_bottom, stirrup_y_top],
-            lw=0.55, color="#7f8c8d")
-
-# support and field zone bands for stirrup spacing
-band_y = y0 + depth + 0.68
-band_h = 0.23
-ax.text(Ln/2, band_y + band_h + 0.10,
-        "SPASI TULANGAN GESER / TORSI",
-        ha="center", va="bottom", fontsize=9, fontweight="bold")
-
-zone_bands = [
-    (left_zone_start, left_zone_end, "#fce5cd",
-     compact_stirrup_label(SL, "Tumpuan kiri")),
-    (field_zone_start, field_zone_end, "#d9eaf7",
-     compact_stirrup_label(SM, "Lapangan")),
-    (right_zone_start, right_zone_end, "#fce5cd",
-     compact_stirrup_label(SR, "Tumpuan kanan"))
+import matplotlib.tri as mtri
+import numpy as np
+import pandas as pd
+import streamlit as st
+from matplotlib.animation import FuncAnimation, PillowWriter
+from matplotlib.cm import ScalarMappable
+from matplotlib.colors import LinearSegmentedColormap, Normalize
+from matplotlib.offsetbox import AnchoredOffsetbox, HPacker, TextArea, VPacker
+from matplotlib.patches import Rectangle
+from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import get_column_letter
+
+
+GAUSS_POINTS_2X2 = [
+    (-1.0 / np.sqrt(3.0), -1.0 / np.sqrt(3.0), 1.0),
+    (1.0 / np.sqrt(3.0), -1.0 / np.sqrt(3.0), 1.0),
+    (1.0 / np.sqrt(3.0), 1.0 / np.sqrt(3.0), 1.0),
+    (-1.0 / np.sqrt(3.0), 1.0 / np.sqrt(3.0), 1.0),
 ]
-
-for start, end, color, label in zone_bands:
-    if end - start <= 1e-9:
-        continue
-    ax.add_patch(Rectangle((start, band_y), end - start, band_h,
-                           facecolor=color, edgecolor="none", alpha=0.75))
-    ax.text((start + end) / 2.0, band_y + band_h / 2.0, label,
-            ha="center", va="center", fontsize=8, fontweight="bold")
-
-for boundary in [left_zone_end, right_zone_start]:
-    if 0 < boundary < Ln:
-        ax.plot([boundary, boundary], [y0 - 0.02, band_y + band_h],
-                lw=0.8, ls="--", color="#b0b0b0")
-
-# ---------- reinforcement ----------
-
-# kiri atas
-for j,_ in enumerate(L["main_layers"]):
-    yy = y0 + depth - 0.10 - j*0.08
-    ax.plot([xL1,xL2],[yy,yy],lw=2,color='red')
-
-# kiri bawah
-for j,_ in enumerate(L["min_layers"]):
-    yy = y0 + 0.10 + j*0.08
-    ax.plot([xL1,xL2],[yy,yy],lw=2,color='blue')
-
-# lapangan bawah
-for j,_ in enumerate(M["main_layers"]):
-    yy = y0 + 0.10 + j*0.08
-    ax.plot([xM1,xM2],[yy,yy],lw=2,color='blue')
-
-# lapangan atas
-for j,_ in enumerate(M["min_layers"]):
-    yy = y0 + depth - 0.10 - j*0.08
-    ax.plot([xM1,xM2],[yy,yy],lw=2,color='green')
-
-# kanan atas
-for j,_ in enumerate(R["main_layers"]):
-    yy = y0 + depth - 0.10 - j*0.08
-    ax.plot([xR1,xR2],[yy,yy],lw=2,color='red')
-
-# kanan bawah
-for j,_ in enumerate(R["min_layers"]):
-    yy = y0 + 0.10 + j*0.08
-    ax.plot([xR1,xR2],[yy,yy],lw=2,color='blue')
-
-# ---------- labels ----------
-
-ax.text((xL1+xL2)/2,5.36,"Atas kiri",
-        ha="center",fontsize=9,color="red")
-
-ax.text((xL1+xL2)/2,5.18,
-        f"0.25Ln+Lext={Ltump:.0f}",
-        ha="center",fontsize=8,color="red")
-
-ax.text(Ln/2,5.22,"Atas lapangan",
-        ha="center",fontsize=9,color="green")
-
-ax.text((xR1+xR2)/2,5.36,"Atas kanan",
-        ha="center",fontsize=9,color="red")
-
-ax.text((xR1+xR2)/2,5.18,
-        f"0.25Ln+Lext={Ltump:.0f}",
-        ha="center",fontsize=8,color="red")
-
-ax.text(420,3.78,"Bawah kiri",
-        ha="left",fontsize=9,color="blue")
-
-ax.text(Ln/2,3.08,"Bawah lapangan",
-        ha="center",fontsize=9,color="blue")
-
-ax.text(Ln/2,3.30,
-        f"0.50Ln+Lextm={Llap:.0f}",
-        ha="center",fontsize=8,color="blue")
-
-ax.text(Ln-820,3.78,"Bawah kanan",
-        ha="left",fontsize=9,color="blue")
-
-# ---------- arrows ----------
-ax.annotate(
-    "", xy=(xL1,5.05), xytext=(xL2,5.05),
-    arrowprops=dict(arrowstyle="<->",lw=1,color="red")
+LINE_GAUSS_POINTS_2 = [
+    (-1.0 / np.sqrt(3.0), 1.0),
+    (1.0 / np.sqrt(3.0), 1.0),
+]
+EDGE_NODE_MAP = {
+    1: (0, 1),
+    2: (1, 2),
+    3: (2, 3),
+    4: (3, 0),
+}
+EDGE_NATURAL_MAP = {
+    1: lambda s: (s, -1.0),
+    2: lambda s: (1.0, s),
+    3: lambda s: (s, 1.0),
+    4: lambda s: (-1.0, s),
+}
+TEMPLATE_FILENAME = "template_plane_stress_quad4.xlsx"
+EXAMPLE_FILENAME = "input_plane_stress_quad.xlsx"
+RESULTS_FILENAME = "hasil_plane2d_analisis.xlsx"
+KGCM2_TO_MPA = 0.1
+MAX_EXPORT_MATRIX_CELLS = 120000
+STRESS_RESULT_COLUMNS = [
+    "sx",
+    "sy",
+    "txy",
+    "s1",
+    "s2",
+    "s3",
+    "mean_stress",
+    "hydrostatic_mean_3d",
+    "tau_max",
+    "tau_min",
+    "von_mises",
+    "I1",
+    "sqrt_J2",
+    "k_dp",
+    "dp_value",
+    "yield_function",
+]
+STRESS_SQUARED_RESULT_COLUMNS = ["J2"]
+STRESS_CONTOUR_OPTIONS = {
+    "Von Mises": "von_mises",
+    "sx": "sx",
+    "sy": "sy",
+    "txy": "txy",
+    "s1": "s1",
+    "s2": "s2",
+    "Tegangan rata-rata": "mean_stress",
+}
+STRESS_CONTOUR_LABELS = {
+    column_name: label for label, column_name in STRESS_CONTOUR_OPTIONS.items()
+}
+STRESS_CONTOUR_CMAP = LinearSegmentedColormap.from_list(
+    "stress_yellow_red",
+    ["#ffe45e", "#ff9f1c", "#d62828"],
 )
-
-ax.annotate(
-    "", xy=(xR1,5.05), xytext=(xR2,5.05),
-    arrowprops=dict(arrowstyle="<->",lw=1,color="red")
+DISPLACEMENT_CONTOUR_OPTIONS = {
+    "Ux": "Ux",
+    "Uy": "Uy",
+}
+DISPLACEMENT_CONTOUR_CMAP = LinearSegmentedColormap.from_list(
+    "displacement_blue_to_red",
+    ["#08306b", "#2171b5", "#6baed6", "#c6dbef", "#d62828"],
 )
+ANIMATION_FIGURE_SIZE = (10.5, 6.8)
 
-ax.annotate(
-    "", xy=(xM1,3.50), xytext=(xM2,3.50),
-    arrowprops=dict(arrowstyle="<->",lw=1,color="blue")
-)
 
-ax.set_xlim(-350,Ln+350)
-ax.set_ylim(2.9,6.15)
-ax.axis("off")
-
-st.pyplot(fig)
-
-# ==========================================================
-# CROSS SECTION
-# ==========================================================
-st.markdown('<div class="sec2">POTONGAN</div>',
-            unsafe_allow_html=True)
-
-col_left, col_mid, col_right = st.columns(3)
-
-with col_left:
-    st.write("Tumpuan Kiri")
-    st.pyplot(draw_section_figure(L, bw, h, cover, stirrup, db),
-              width="stretch")
-
-with col_mid:
-    st.write("Lapangan")
-    st.pyplot(draw_section_figure(M, bw, h, cover, stirrup, db),
-              width="stretch")
-
-with col_right:
-    st.write("Tumpuan Kanan")
-    st.pyplot(draw_section_figure(R, bw, h, cover, stirrup, db),
-              width="stretch")
-
-# ==========================================================
-# SHEAR & TORSION
-# ==========================================================
-st.markdown('<div class="sec">DESAIN PENULANGAN GESER DAN TORSI</div>',
-            unsafe_allow_html=True)
-mode_label = (
-    "Torsi Keseimbangan: Tu dipakai penuh"
-    if torsion_mode == "equilibrium"
-    else "Torsi Kompatibilitas: Tu boleh direduksi ke phiTcr"
-)
-transverse_mode_label = transverse_design_mode_label(transverse_design_mode)
-st.caption(
-    "Modul ini dibuat terpisah dari penulangan lentur. "
-    f"Mode aktif: {mode_label}. "
-    f"Mode transversal: {transverse_mode_label}. "
-    "Asumsi desain: balok nonprategang, beton normal, sengkang tertutup 2 kaki, "
-    "dan theta torsi = 45 derajat."
-)
-
-zones_st = [SL, SM, SR]
-torsion_rep_zone = select_representative_torsion_zone(zones_st)
-tab_ringkas, tab_detail, tab_potongan, tab_penulangan = st.tabs(
-    ["Ringkasan", "Hitungan Lengkap", "Potongan Geser-Torsi", "Detail Penulangan"]
-)
-
-with tab_ringkas:
-    st.markdown(shear_torsion_summary_markdown(zones_st))
-
-    g1, g2, g3 = st.columns(3)
-
-    with g1:
-        st.subheader("TUMPUAN KIRI")
-        st.write(f"Vu = {SL['Vu']:.2f} kN")
-        st.write(f"Tu input = {SL['Tu']:.2f} kN.m")
-        st.write(f"Tu desain = {SL['Tu_design']:.2f} kN.m")
-        st.write(f"Transversal = {SL['stirrup_text']}")
-        st.write(f"Longitudinal torsi = {SL['longitudinal_text']}")
-        st.write(f"Status = {SL['status']}")
-
-    with g2:
-        st.subheader("LAPANGAN")
-        st.write(f"Vu = {SM['Vu']:.2f} kN")
-        st.write(f"Tu input = {SM['Tu']:.2f} kN.m")
-        st.write(f"Tu desain = {SM['Tu_design']:.2f} kN.m")
-        st.write(f"Transversal = {SM['stirrup_text']}")
-        st.write(f"Longitudinal torsi = {SM['longitudinal_text']}")
-        st.write(f"Status = {SM['status']}")
-
-    with g3:
-        st.subheader("TUMPUAN KANAN")
-        st.write(f"Vu = {SR['Vu']:.2f} kN")
-        st.write(f"Tu input = {SR['Tu']:.2f} kN.m")
-        st.write(f"Tu desain = {SR['Tu_design']:.2f} kN.m")
-        st.write(f"Transversal = {SR['stirrup_text']}")
-        st.write(f"Longitudinal torsi = {SR['longitudinal_text']}")
-        st.write(f"Status = {SR['status']}")
-
-with tab_detail:
-    with st.expander("HITUNGAN LENGKAP GESER & TORSI TUMPUAN KIRI"):
-        exp_left, exp_right = st.columns([2.0, 1.0])
-        with exp_left:
-            st.markdown(shear_torsion_report_markdown(SL, bw, h, cover, stirrup))
-        with exp_right:
-            st.write("Potongan Geser-Torsi")
-            st.pyplot(
-                draw_shear_torsion_section_figure(SL, bw, h, cover, stirrup, db_torsion),
-                width="stretch"
-            )
-
-    with st.expander("HITUNGAN LENGKAP GESER & TORSI LAPANGAN"):
-        exp_left, exp_right = st.columns([2.0, 1.0])
-        with exp_left:
-            st.markdown(shear_torsion_report_markdown(SM, bw, h, cover, stirrup))
-        with exp_right:
-            st.write("Potongan Geser-Torsi")
-            st.pyplot(
-                draw_shear_torsion_section_figure(SM, bw, h, cover, stirrup, db_torsion),
-                width="stretch"
-            )
-
-    with st.expander("HITUNGAN LENGKAP GESER & TORSI TUMPUAN KANAN"):
-        exp_left, exp_right = st.columns([2.0, 1.0])
-        with exp_left:
-            st.markdown(shear_torsion_report_markdown(SR, bw, h, cover, stirrup))
-        with exp_right:
-            st.write("Potongan Geser-Torsi")
-            st.pyplot(
-                draw_shear_torsion_section_figure(SR, bw, h, cover, stirrup, db_torsion),
-                width="stretch"
-            )
-
-with tab_potongan:
-    p1, p2, p3 = st.columns(3)
-
-    with p1:
-        st.write("Tumpuan Kiri")
-        st.pyplot(
-            draw_shear_torsion_section_figure(SL, bw, h, cover, stirrup, db_torsion),
-            width="stretch"
+def require_columns(df, required_columns, sheet_name):
+    missing = [column for column in required_columns if column not in df.columns]
+    if missing:
+        raise ValueError(
+            f"Sheet '{sheet_name}' belum memiliki kolom wajib: {', '.join(missing)}"
         )
 
-    with p2:
-        st.write("Lapangan")
-        st.pyplot(
-            draw_shear_torsion_section_figure(SM, bw, h, cover, stirrup, db_torsion),
-            width="stretch"
+
+def read_required_sheet(xls, sheet_name, required_columns):
+    try:
+        df = pd.read_excel(xls, sheet_name=sheet_name)
+    except ValueError as exc:
+        raise ValueError(f"Sheet wajib '{sheet_name}' tidak ditemukan") from exc
+    require_columns(df, required_columns, sheet_name)
+    return df
+
+
+def read_optional_sheet(xls, sheet_name, columns):
+    try:
+        df = pd.read_excel(xls, sheet_name=sheet_name)
+    except ValueError:
+        return pd.DataFrame(columns=columns)
+    for column in columns:
+        if column not in df.columns:
+            df[column] = 0.0
+    return df
+
+
+def signed_polygon_area(coords):
+    x = coords[:, 0]
+    y = coords[:, 1]
+    return 0.5 * np.sum(x * np.roll(y, -1) - y * np.roll(x, -1))
+
+
+def constitutive_matrix(E, nu, mode):
+    if mode == "Plane Stress":
+        factor = E / (1.0 - nu**2)
+        return factor * np.array(
+            [[1.0, nu, 0.0], [nu, 1.0, 0.0], [0.0, 0.0, (1.0 - nu) / 2.0]]
         )
 
-    with p3:
-        st.write("Tumpuan Kanan")
-        st.pyplot(
-            draw_shear_torsion_section_figure(SR, bw, h, cover, stirrup, db_torsion),
-            width="stretch"
-        )
-
-with tab_penulangan:
-    st.markdown("**Detail Penulangan Geser dan Torsi**")
-    st.caption(
-        "Visual ini menampilkan spasi sengkang hasil desain pada daerah tumpuan dan lapangan, "
-        "plot tulangan longitudinal torsi tambahan pada tampak memanjang, "
-        "serta keterangan penulangan torsi representatif."
-    )
-
-    st.pyplot(
-        draw_shear_torsion_longitudinal_detail_figure(
-            Ln, Ltump, xR1, zones_st, bw, h, cover, stirrup
-        ),
-        width="stretch"
-    )
-
-    pen_left, pen_right = st.columns([1.5, 1.0])
-
-    with pen_left:
-        st.write("Potongan representatif geser-torsi")
-        section_cols = st.columns(3)
-        section_items = [
-            ("Tumpuan Kiri", SL),
-            ("Lapangan", SM),
-            ("Tumpuan Kanan", SR)
+    factor = E / ((1.0 + nu) * (1.0 - 2.0 * nu))
+    return factor * np.array(
+        [
+            [1.0 - nu, nu, 0.0],
+            [nu, 1.0 - nu, 0.0],
+            [0.0, 0.0, (1.0 - 2.0 * nu) / 2.0],
         ]
-        for col, (label, zone) in zip(section_cols, section_items):
-            with col:
-                st.caption(label)
-                st.pyplot(
-                    draw_shear_torsion_section_figure(
-                        zone, bw, h, cover, stirrup, db_torsion
-                    ),
-                    width="stretch"
+    )
+
+
+def shape_functions_quad4(xi, eta):
+    return 0.25 * np.array(
+        [
+            (1.0 - xi) * (1.0 - eta),
+            (1.0 + xi) * (1.0 - eta),
+            (1.0 + xi) * (1.0 + eta),
+            (1.0 - xi) * (1.0 + eta),
+        ]
+    )
+
+
+def shape_derivatives_quad4(xi, eta):
+    dN_dxi = 0.25 * np.array(
+        [-(1.0 - eta), (1.0 - eta), (1.0 + eta), -(1.0 + eta)]
+    )
+    dN_deta = 0.25 * np.array(
+        [-(1.0 - xi), -(1.0 + xi), (1.0 + xi), (1.0 - xi)]
+    )
+    return np.vstack((dN_dxi, dN_deta))
+
+
+def quad4_B_matrix(coords, xi, eta):
+    dN_natural = shape_derivatives_quad4(xi, eta)
+    jacobian = dN_natural @ coords
+    det_jacobian = np.linalg.det(jacobian)
+    if det_jacobian <= 0.0:
+        raise ValueError(
+            "Jacobian elemen tidak valid. Pastikan urutan node elemen berlawanan arah jarum jam."
+        )
+
+    dN_global = np.linalg.inv(jacobian) @ dN_natural
+    B = np.zeros((3, 8))
+    for i in range(4):
+        B[0, 2 * i] = dN_global[0, i]
+        B[1, 2 * i + 1] = dN_global[1, i]
+        B[2, 2 * i] = dN_global[1, i]
+        B[2, 2 * i + 1] = dN_global[0, i]
+    return B, det_jacobian
+
+
+def map_natural_to_global(coords, xi, eta):
+    return shape_functions_quad4(xi, eta) @ coords
+
+
+def quad4_element_matrices(coords, D, thickness):
+    Ke = np.zeros((8, 8))
+    gauss_data = []
+    B_total = np.zeros((3, 8))
+
+    for gauss_index, (xi, eta, weight) in enumerate(GAUSS_POINTS_2X2, start=1):
+        B, det_jacobian = quad4_B_matrix(coords, xi, eta)
+        BTDB = B.T @ D @ B
+        Ke += BTDB * det_jacobian * thickness * weight
+        gauss_data.append(
+            {
+                "gauss_point": gauss_index,
+                "xi": xi,
+                "eta": eta,
+                "weight": weight,
+                "det_jacobian": det_jacobian,
+                "B": B,
+                "BTDB": BTDB,
+            }
+        )
+        B_total += B
+
+    return {
+        "ke": Ke,
+        "gauss_data": gauss_data,
+        "B_total": B_total,
+    }
+
+
+def quad4_edge_load(coords, edge, qx, qy):
+    if edge not in EDGE_NODE_MAP:
+        raise ValueError("Nomor edge elemen harus 1, 2, 3, atau 4")
+
+    start_node, end_node = EDGE_NODE_MAP[edge]
+    jacobian_edge = np.linalg.norm(coords[end_node] - coords[start_node]) / 2.0
+    traction = np.array([qx, qy], dtype=float)
+    fe = np.zeros(8)
+
+    for s, weight in LINE_GAUSS_POINTS_2:
+        xi, eta = EDGE_NATURAL_MAP[edge](s)
+        N = shape_functions_quad4(xi, eta)
+        N_matrix = np.zeros((2, 8))
+        for i in range(4):
+            N_matrix[0, 2 * i] = N[i]
+            N_matrix[1, 2 * i + 1] = N[i]
+        fe += N_matrix.T @ traction * jacobian_edge * weight
+
+    return fe
+
+
+def element_dof_map(node_ids, node_index):
+    dof_map = []
+    for node_id in node_ids:
+        idx = node_index[node_id]
+        dof_map.extend([2 * idx, 2 * idx + 1])
+    return dof_map
+
+
+def element_dof_labels(node_ids):
+    labels = []
+    for node_id in node_ids:
+        labels.extend([f"u{node_id}", f"v{node_id}"])
+    return labels
+
+
+def global_dof_labels(node_ids):
+    return element_dof_labels(node_ids)
+
+
+def b_total_row_labels():
+    return ["ex", "ey", "gxy"]
+
+
+def matrix_to_dataframe(matrix, row_labels, col_labels):
+    return pd.DataFrame(matrix, index=row_labels, columns=col_labels)
+
+
+def vector_to_dataframe(vector, labels, column_name):
+    return pd.DataFrame({"DOF": labels, column_name: vector})
+
+
+def show_dataframe(df, *, keep_left_column=False, **kwargs):
+    if keep_left_column:
+        st.dataframe(df, **kwargs)
+        return
+    st.dataframe(df, hide_index=True, **kwargs)
+
+
+def assemble_element_global_matrix(ke, dof_map, total_dof):
+    kg_element = np.zeros((total_dof, total_dof))
+    kg_element[np.ix_(dof_map, dof_map)] = ke
+    return kg_element
+
+
+def normalize_angle_deg(angle_deg):
+    return ((angle_deg + 90.0) % 180.0) - 90.0
+
+
+def principal_angle_display_deg(angle_deg):
+    return float(angle_deg)
+
+
+def principal_plot_direction(angle_deg):
+    angle_value = float(angle_deg)
+    if np.isclose(angle_value, 0.0):
+        return "Sejajar sumbu +x"
+    if angle_value > 0.0:
+        return "Berlawanan arah jarum jam"
+    return "Searah jarum jam"
+
+
+def perpendicular_angle_from_principal_deg(angle_deg):
+    return float(angle_deg) + 90.0
+
+
+def add_counterclockwise_principal_angle_columns(df):
+    display_df = df.copy()
+    if "principal_angle_1_deg" in display_df.columns:
+        display_df["principal_angle_1_ccw_deg"] = display_df[
+            "principal_angle_1_deg"
+        ].apply(principal_angle_display_deg)
+        display_df["principal_angle_plot_direction"] = display_df[
+            "principal_angle_1_deg"
+        ].apply(principal_plot_direction)
+        display_df["principal_angle_perpendicular_deg"] = display_df[
+            "principal_angle_1_deg"
+        ].apply(perpendicular_angle_from_principal_deg)
+    if "principal_angle_2_deg" in display_df.columns:
+        display_df["principal_angle_2_ccw_deg"] = display_df[
+            "principal_angle_2_deg"
+        ].apply(principal_angle_display_deg)
+    return display_df
+
+
+def convert_stress_dataframe_to_mpa(df):
+    converted_df = df.copy()
+    for column in STRESS_RESULT_COLUMNS:
+        if column in converted_df.columns:
+            converted_df[column] = converted_df[column] * KGCM2_TO_MPA
+    for column in STRESS_SQUARED_RESULT_COLUMNS:
+        if column in converted_df.columns:
+            converted_df[column] = converted_df[column] * (KGCM2_TO_MPA**2)
+    return converted_df
+
+
+def convert_stress_matrix_to_mpa(matrix):
+    return np.array(matrix, dtype=float) * KGCM2_TO_MPA
+
+
+def transform_stress_2d(sx, sy, txy, theta_deg):
+    theta = np.radians(theta_deg)
+    mean_inplane = 0.5 * (sx + sy)
+    diff = 0.5 * (sx - sy)
+    sigma_theta = mean_inplane + diff * np.cos(2.0 * theta) + txy * np.sin(2.0 * theta)
+    tau_theta = -diff * np.sin(2.0 * theta) + txy * np.cos(2.0 * theta)
+    return sigma_theta, tau_theta
+
+
+def workbook_principal_angle_deg(sx, sy, txy):
+    angle_raw = 0.5 * np.degrees(np.arctan2(2.0 * txy, sx - sy))
+    angle_option_1 = normalize_angle_deg(angle_raw)
+    angle_option_2 = normalize_angle_deg(angle_raw + 90.0)
+    if abs(angle_option_1) <= abs(angle_option_2):
+        return angle_option_1
+    return angle_option_2
+
+
+def drucker_prager_parameters(fc, ft):
+    denominator = np.sqrt(3.0) * (fc + ft)
+    if denominator <= 0.0:
+        raise ValueError("Parameter beton untuk Drucker-Prager harus lebih besar dari nol.")
+    alpha = (fc - ft) / denominator
+    k_value = (2.0 * fc * ft) / denominator
+    return alpha, k_value
+
+
+def stress_metrics(sx, sy, txy, fc, ft):
+    mean_inplane = 0.5 * (sx + sy)
+    radius = np.sqrt(((sx - sy) / 2.0) ** 2 + txy**2)
+    sigma_1 = mean_inplane + radius
+    sigma_2 = mean_inplane - radius
+    sigma_3 = 0.0
+
+    theta_p1 = workbook_principal_angle_deg(sx, sy, txy)
+    theta_p2 = theta_p1 + 90.0
+
+    tau_max = radius
+    theta_tau_max = normalize_angle_deg(theta_p1 + 45.0)
+    tau_min = -radius
+    theta_tau_min = normalize_angle_deg(theta_p1 - 45.0)
+
+    mean_stress = 0.5 * (sx + sy)
+    hydrostatic_mean_3d = (sx + sy + sigma_3) / 3.0
+    von_mises = np.sqrt(sx**2 - sx * sy + sy**2 + 3.0 * txy**2)
+
+    I1 = sx + sy + sigma_3
+    J2 = ((sx - sy) ** 2 + (sy - sigma_3) ** 2 + (sigma_3 - sx) ** 2) / 6.0 + txy**2
+    sqrt_J2 = np.sqrt(max(J2, 0.0))
+    alpha_dp, k_dp = drucker_prager_parameters(fc, ft)
+    dp_value = sqrt_J2 + alpha_dp * I1
+    yield_function = dp_value - k_dp
+
+    return {
+        "s1": sigma_1,
+        "s2": sigma_2,
+        "s3": sigma_3,
+        "principal_angle_1_deg": normalize_angle_deg(theta_p1),
+        "principal_angle_2_deg": theta_p2,
+        "mean_stress": mean_stress,
+        "hydrostatic_mean_3d": hydrostatic_mean_3d,
+        "tau_max": tau_max,
+        "theta_tau_max_deg": theta_tau_max,
+        "tau_min": tau_min,
+        "theta_tau_min_deg": theta_tau_min,
+        "von_mises": von_mises,
+        "I1": I1,
+        "J2": J2,
+        "sqrt_J2": sqrt_J2,
+        "alpha_dp": alpha_dp,
+        "k_dp": k_dp,
+        "dp_value": dp_value,
+        "yield_function": yield_function,
+        "yield_state": "Yield" if yield_function >= 0.0 else "Elastic",
+    }
+
+
+def row_value(row, column_name, default_value):
+    if column_name in row and pd.notna(row[column_name]):
+        return float(row[column_name])
+    return float(default_value)
+
+
+def solve_system(K, F, prescribed_dofs):
+    dof = K.shape[0]
+    fixed_dofs = sorted(prescribed_dofs)
+    free_dofs = [i for i in range(dof) if i not in prescribed_dofs]
+
+    if not free_dofs:
+        raise ValueError("Semua derajat bebas terkunci.")
+
+    U = np.zeros(dof)
+    if fixed_dofs:
+        U[fixed_dofs] = np.array([prescribed_dofs[dof_id] for dof_id in fixed_dofs])
+
+    Kff = K[np.ix_(free_dofs, free_dofs)]
+    Ff = F[free_dofs]
+    if fixed_dofs:
+        Kfc = K[np.ix_(free_dofs, fixed_dofs)]
+        Uc = U[fixed_dofs]
+        Ff = Ff - Kfc @ Uc
+
+    try:
+        U[free_dofs] = np.linalg.solve(Kff, Ff)
+    except np.linalg.LinAlgError as exc:
+        raise ValueError(
+            "Matriks kekakuan singular. Cek boundary condition atau konektivitas mesh."
+        ) from exc
+
+    reactions = K @ U - F
+    return U, reactions
+
+
+def create_results(
+    nodes,
+    elements,
+    node_index,
+    coordinates,
+    mode,
+    default_E,
+    default_nu,
+    default_t,
+    concrete_fc,
+    concrete_ft,
+    U,
+):
+    displacement_rows = []
+    for _, node in nodes.iterrows():
+        node_id = int(node["id"])
+        idx = node_index[node_id]
+        ux = U[2 * idx]
+        uy = U[2 * idx + 1]
+        displacement_rows.append(
+            {
+                "node": node_id,
+                "x": coordinates[idx, 0],
+                "y": coordinates[idx, 1],
+                "Ux": ux,
+                "Uy": uy,
+                "U_mag": np.hypot(ux, uy),
+            }
+        )
+
+    gauss_rows = []
+    element_rows = []
+    for _, element in elements.iterrows():
+        element_id = int(element["id"])
+        node_ids = [int(element[f"n{i}"]) for i in range(1, 5)]
+        coords = np.array([coordinates[node_index[node_id]] for node_id in node_ids])
+        centroid = coords.mean(axis=0)
+        dof_map = element_dof_map(node_ids, node_index)
+        element_u = U[dof_map]
+
+        E = row_value(element, "E", default_E)
+        nu = row_value(element, "nu", default_nu)
+        thickness = row_value(element, "t", default_t)
+        D = constitutive_matrix(E, nu, mode)
+
+        B_total = np.zeros((3, 8))
+        for gauss_index, (xi, eta, _) in enumerate(GAUSS_POINTS_2X2, start=1):
+            B, _ = quad4_B_matrix(coords, xi, eta)
+            B_total += B
+            strain = B @ element_u
+            stress = D @ strain
+            sx, sy, txy = stress
+            metrics = stress_metrics(sx, sy, txy, concrete_fc, concrete_ft)
+            gp_coordinates = map_natural_to_global(coords, xi, eta)
+            row = {
+                "element": element_id,
+                "gauss_point": gauss_index,
+                "xi": xi,
+                "eta": eta,
+                "x_gp": gp_coordinates[0],
+                "y_gp": gp_coordinates[1],
+                "thickness": thickness,
+                "ex": strain[0],
+                "ey": strain[1],
+                "gxy": strain[2],
+                "sx": sx,
+                "sy": sy,
+                "txy": txy,
+                **metrics,
+            }
+            gauss_rows.append(row)
+
+        element_strain = B_total @ element_u
+        element_stress = D @ element_strain
+        sx, sy, txy = element_stress
+        element_metrics = stress_metrics(sx, sy, txy, concrete_fc, concrete_ft)
+
+        element_rows.append(
+            {
+                "element": element_id,
+                "x_centroid": centroid[0],
+                "y_centroid": centroid[1],
+                "thickness": thickness,
+                "ex": element_strain[0],
+                "ey": element_strain[1],
+                "gxy": element_strain[2],
+                "sx": sx,
+                "sy": sy,
+                "txy": txy,
+                **element_metrics,
+            }
+        )
+
+    return (
+        pd.DataFrame(displacement_rows),
+        pd.DataFrame(gauss_rows),
+        pd.DataFrame(element_rows),
+    )
+
+
+def auto_scale_factor(nodes_xy, displacements):
+    max_dimension = max(
+        np.ptp(nodes_xy[:, 0]) if len(nodes_xy) else 0.0,
+        np.ptp(nodes_xy[:, 1]) if len(nodes_xy) else 0.0,
+    )
+    max_displacement = np.max(np.abs(displacements)) if len(displacements) else 0.0
+    if max_dimension <= 0.0 or max_displacement <= 1e-12:
+        return 1.0
+    return max(1.0, 0.15 * max_dimension / max_displacement)
+
+
+def select_extreme_row(df, column_name, *, mode="max", absolute=False):
+    if df.empty or column_name not in df.columns:
+        return None
+
+    numeric_series = pd.to_numeric(df[column_name], errors="coerce")
+    valid_values = numeric_series.dropna()
+    if valid_values.empty:
+        return None
+
+    if absolute:
+        selected_index = valid_values.abs().idxmax()
+    elif mode == "min":
+        selected_index = valid_values.idxmin()
+    else:
+        selected_index = valid_values.idxmax()
+    return df.loc[selected_index]
+
+
+def build_support_reaction_detail_dataframe(reactions, prescribed_dofs, node_ids):
+    rows = []
+    for dof_id in sorted(prescribed_dofs):
+        node_id = int(node_ids[dof_id // 2])
+        component = "Rx" if dof_id % 2 == 0 else "Ry"
+        rows.append(
+            {
+                "node": node_id,
+                "component": component,
+                "prescribed_displacement": prescribed_dofs[dof_id],
+                "reaction": reactions[dof_id],
+                "reaction_abs": abs(reactions[dof_id]),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_equilibrium_dataframe(F, reactions, prescribed_dofs, relative_tolerance=1e-6):
+    support_reaction_x = sum(
+        reactions[dof_id] for dof_id in prescribed_dofs if dof_id % 2 == 0
+    )
+    support_reaction_y = sum(
+        reactions[dof_id] for dof_id in prescribed_dofs if dof_id % 2 == 1
+    )
+    total_load_x = float(F[0::2].sum())
+    total_load_y = float(F[1::2].sum())
+    residual_x = total_load_x + float(support_reaction_x)
+    residual_y = total_load_y + float(support_reaction_y)
+
+    reference_x = max(abs(total_load_x), abs(support_reaction_x), 1.0)
+    reference_y = max(abs(total_load_y), abs(support_reaction_y), 1.0)
+    residual_ratio_x = abs(residual_x) / reference_x
+    residual_ratio_y = abs(residual_y) / reference_y
+
+    residual_norm = float(np.hypot(residual_x, residual_y))
+    reference_norm = max(
+        float(np.hypot(total_load_x, total_load_y)),
+        float(np.hypot(support_reaction_x, support_reaction_y)),
+        1.0,
+    )
+    residual_ratio_norm = residual_norm / reference_norm
+
+    equilibrium_df = pd.DataFrame(
+        [
+            {
+                "Arah": "Fx",
+                "Total beban luar": total_load_x,
+                "Total reaksi tumpuan": support_reaction_x,
+                "Residual (beban + reaksi)": residual_x,
+                "Residual relatif": residual_ratio_x,
+                "Status": "OK"
+                if residual_ratio_x <= relative_tolerance
+                else "Warning",
+            },
+            {
+                "Arah": "Fy",
+                "Total beban luar": total_load_y,
+                "Total reaksi tumpuan": support_reaction_y,
+                "Residual (beban + reaksi)": residual_y,
+                "Residual relatif": residual_ratio_y,
+                "Status": "OK"
+                if residual_ratio_y <= relative_tolerance
+                else "Warning",
+            },
+            {
+                "Arah": "Resultan",
+                "Total beban luar": float(np.hypot(total_load_x, total_load_y)),
+                "Total reaksi tumpuan": float(
+                    np.hypot(support_reaction_x, support_reaction_y)
+                ),
+                "Residual (beban + reaksi)": residual_norm,
+                "Residual relatif": residual_ratio_norm,
+                "Status": "OK"
+                if residual_ratio_norm <= relative_tolerance
+                else "Warning",
+            },
+        ]
+    )
+    return equilibrium_df, bool((equilibrium_df["Status"] == "OK").all())
+
+
+def build_model_summary_dataframe(
+    analysis_mode,
+    nodes,
+    elements,
+    loads,
+    bc,
+    edge_loads,
+    default_E,
+    default_nu,
+    default_t,
+    concrete_fc,
+    concrete_ft,
+    dof_total,
+    prescribed_dofs,
+):
+    fixed_dofs = len(prescribed_dofs)
+    free_dofs = max(dof_total - fixed_dofs, 0)
+    return pd.DataFrame(
+        [
+            {"Parameter": "Tipe analisis", "Nilai": analysis_mode, "Satuan": "-"},
+            {"Parameter": "Jumlah node", "Nilai": len(nodes), "Satuan": "node"},
+            {"Parameter": "Jumlah elemen", "Nilai": len(elements), "Satuan": "elemen"},
+            {"Parameter": "DOF total", "Nilai": dof_total, "Satuan": "DOF"},
+            {"Parameter": "DOF terkunci", "Nilai": fixed_dofs, "Satuan": "DOF"},
+            {"Parameter": "DOF bebas", "Nilai": free_dofs, "Satuan": "DOF"},
+            {"Parameter": "Baris BC", "Nilai": len(bc), "Satuan": "baris"},
+            {
+                "Parameter": "Jumlah beban nodal",
+                "Nilai": len(loads),
+                "Satuan": "baris",
+            },
+            {
+                "Parameter": "Jumlah beban tepi",
+                "Nilai": len(edge_loads),
+                "Satuan": "baris",
+            },
+            {
+                "Parameter": "E default",
+                "Nilai": float(default_E),
+                "Satuan": "kg/cm2",
+            },
+            {"Parameter": "nu default", "Nilai": float(default_nu), "Satuan": "-"},
+            {
+                "Parameter": "Tebal default",
+                "Nilai": float(default_t),
+                "Satuan": "cm",
+            },
+            {
+                "Parameter": "fc' beton",
+                "Nilai": float(concrete_fc),
+                "Satuan": "kg/cm2",
+            },
+            {
+                "Parameter": "ft beton",
+                "Nilai": float(concrete_ft),
+                "Satuan": "kg/cm2",
+            },
+        ]
+    )
+
+
+def format_node_location(row):
+    return (
+        f"Node {int(row['node'])} "
+        f"(x={float(row['x']):.3f}, y={float(row['y']):.3f})"
+    )
+
+
+def format_element_location(row):
+    return (
+        f"Elemen {int(row['element'])} "
+        f"(x={float(row['x_centroid']):.3f}, y={float(row['y_centroid']):.3f})"
+    )
+
+
+def format_gauss_location(row):
+    return (
+        f"Elemen {int(row['element'])} / GP {int(row['gauss_point'])} "
+        f"(x={float(row['x_gp']):.3f}, y={float(row['y_gp']):.3f})"
+    )
+
+
+def build_executive_summary_dataframe(
+    displacement_df,
+    element_results,
+    gauss_results,
+    support_reaction_detail_df,
+):
+    summary_rows = []
+
+    max_displacement_row = select_extreme_row(displacement_df, "U_mag")
+    if max_displacement_row is not None:
+        summary_rows.append(
+            {
+                "Indikator": "Displacement maksimum",
+                "Lokasi": format_node_location(max_displacement_row),
+                "Nilai": float(max_displacement_row["U_mag"]),
+                "Satuan": "satuan model",
+                "Keterangan": "Magnitude perpindahan total terbesar.",
+            }
+        )
+
+    max_ux_row = select_extreme_row(displacement_df, "Ux", absolute=True)
+    if max_ux_row is not None:
+        summary_rows.append(
+            {
+                "Indikator": "|Ux| maksimum",
+                "Lokasi": format_node_location(max_ux_row),
+                "Nilai": float(max_ux_row["Ux"]),
+                "Satuan": "satuan model",
+                "Keterangan": "Komponen perpindahan arah X terbesar secara absolut.",
+            }
+        )
+
+    max_uy_row = select_extreme_row(displacement_df, "Uy", absolute=True)
+    if max_uy_row is not None:
+        summary_rows.append(
+            {
+                "Indikator": "|Uy| maksimum",
+                "Lokasi": format_node_location(max_uy_row),
+                "Nilai": float(max_uy_row["Uy"]),
+                "Satuan": "satuan model",
+                "Keterangan": "Komponen perpindahan arah Y terbesar secara absolut.",
+            }
+        )
+
+    max_support_reaction_row = select_extreme_row(
+        support_reaction_detail_df, "reaction", absolute=True
+    )
+    if max_support_reaction_row is not None:
+        summary_rows.append(
+            {
+                "Indikator": "Reaksi tumpuan maksimum",
+                "Lokasi": (
+                    f"Node {int(max_support_reaction_row['node'])} / "
+                    f"{max_support_reaction_row['component']}"
+                ),
+                "Nilai": float(max_support_reaction_row["reaction"]),
+                "Satuan": "satuan gaya model",
+                "Keterangan": "Reaksi per DOF terkunci terbesar secara absolut.",
+            }
+        )
+
+    max_vm_element_row = select_extreme_row(element_results, "von_mises")
+    if max_vm_element_row is not None:
+        summary_rows.append(
+            {
+                "Indikator": "Von Mises maksimum elemen",
+                "Lokasi": format_element_location(max_vm_element_row),
+                "Nilai": float(max_vm_element_row["von_mises"]),
+                "Satuan": "MPa",
+                "Keterangan": "Berdasarkan hasil elemen memakai `B_total`.",
+            }
+        )
+
+    max_vm_gauss_row = select_extreme_row(gauss_results, "von_mises")
+    if max_vm_gauss_row is not None:
+        summary_rows.append(
+            {
+                "Indikator": "Von Mises maksimum titik Gauss",
+                "Lokasi": format_gauss_location(max_vm_gauss_row),
+                "Nilai": float(max_vm_gauss_row["von_mises"]),
+                "Satuan": "MPa",
+                "Keterangan": "Lebih konservatif karena dievaluasi per titik integrasi.",
+            }
+        )
+
+    max_tension_row = select_extreme_row(gauss_results, "s1")
+    if max_tension_row is not None:
+        summary_rows.append(
+            {
+                "Indikator": "Tegangan utama tarik maksimum",
+                "Lokasi": format_gauss_location(max_tension_row),
+                "Nilai": float(max_tension_row["s1"]),
+                "Satuan": "MPa",
+                "Keterangan": "Mengacu pada principal stress `s1`.",
+            }
+        )
+
+    max_compression_row = select_extreme_row(gauss_results, "s2", mode="min")
+    if max_compression_row is not None:
+        summary_rows.append(
+            {
+                "Indikator": "Tegangan utama tekan maksimum",
+                "Lokasi": format_gauss_location(max_compression_row),
+                "Nilai": float(max_compression_row["s2"]),
+                "Satuan": "MPa",
+                "Keterangan": "Nilai paling negatif menunjukkan tekan terbesar.",
+            }
+        )
+
+    max_yield_row = select_extreme_row(gauss_results, "yield_function")
+    if max_yield_row is not None:
+        summary_rows.append(
+            {
+                "Indikator": "Yield function maksimum",
+                "Lokasi": format_gauss_location(max_yield_row),
+                "Nilai": float(max_yield_row["yield_function"]),
+                "Satuan": "MPa",
+                "Keterangan": f"Status titik ini: {max_yield_row['yield_state']}.",
+            }
+        )
+
+    yield_count = (
+        int((gauss_results["yield_state"] == "Yield").sum())
+        if "yield_state" in gauss_results.columns
+        else 0
+    )
+    summary_rows.append(
+        {
+            "Indikator": "Jumlah titik Gauss status Yield",
+            "Lokasi": "Seluruh model",
+            "Nilai": yield_count,
+            "Satuan": "titik",
+            "Keterangan": (
+                "Perlu review lebih lanjut."
+                if yield_count > 0
+                else "Semua titik Gauss masih berstatus Elastic."
+            ),
+        }
+    )
+
+    return pd.DataFrame(summary_rows)
+
+
+def build_nodal_hotspots_dataframe(displacement_df, top_n=10):
+    if displacement_df.empty:
+        return displacement_df.copy()
+
+    hotspot_df = displacement_df.copy()
+    hotspot_df["Abs_Ux"] = hotspot_df["Ux"].abs()
+    hotspot_df["Abs_Uy"] = hotspot_df["Uy"].abs()
+    hotspot_df = hotspot_df.sort_values(
+        ["U_mag", "Abs_Uy", "Abs_Ux"], ascending=[False, False, False]
+    ).head(top_n)
+    return hotspot_df[["node", "x", "y", "Ux", "Uy", "U_mag"]]
+
+
+def build_support_hotspots_dataframe(constrained_reaction_df, displacement_df, top_n=10):
+    if constrained_reaction_df.empty:
+        return constrained_reaction_df.copy()
+
+    hotspot_df = constrained_reaction_df.merge(
+        displacement_df[["node", "x", "y"]],
+        on="node",
+        how="left",
+    )
+    hotspot_df["R_mag"] = np.hypot(hotspot_df["Rx"], hotspot_df["Ry"])
+    hotspot_df = hotspot_df.sort_values("R_mag", ascending=False).head(top_n)
+    return hotspot_df[["node", "x", "y", "Rx", "Ry", "R_mag"]]
+
+
+def build_element_hotspot_dataframe(element_results, primary_column, top_n=10):
+    if element_results.empty or primary_column not in element_results.columns:
+        return pd.DataFrame()
+
+    sort_columns = [primary_column]
+    ascending_flags = [False]
+    if primary_column != "von_mises" and "von_mises" in element_results.columns:
+        sort_columns.append("von_mises")
+        ascending_flags.append(False)
+
+    hotspot_df = element_results.sort_values(
+        sort_columns, ascending=ascending_flags
+    ).head(top_n)
+    return hotspot_df[
+        [
+            "element",
+            "x_centroid",
+            "y_centroid",
+            "sx",
+            "sy",
+            "txy",
+            "s1",
+            "s2",
+            "von_mises",
+            "yield_function",
+            "yield_state",
+        ]
+    ]
+
+
+def build_gauss_hotspot_dataframe(gauss_results, primary_column, top_n=10):
+    if gauss_results.empty or primary_column not in gauss_results.columns:
+        return pd.DataFrame()
+
+    sort_columns = [primary_column]
+    ascending_flags = [False]
+    if primary_column != "von_mises" and "von_mises" in gauss_results.columns:
+        sort_columns.append("von_mises")
+        ascending_flags.append(False)
+
+    hotspot_df = gauss_results.sort_values(
+        sort_columns, ascending=ascending_flags
+    ).head(top_n)
+    return hotspot_df[
+        [
+            "element",
+            "gauss_point",
+            "x_gp",
+            "y_gp",
+            "sx",
+            "sy",
+            "txy",
+            "s1",
+            "s2",
+            "von_mises",
+            "yield_function",
+            "yield_state",
+        ]
+    ]
+
+
+def style_export_worksheet(worksheet, df, *, include_index):
+    if worksheet.max_row < 1 or worksheet.max_column < 1:
+        return
+
+    worksheet.freeze_panes = "A2"
+    worksheet.auto_filter.ref = worksheet.dimensions
+    header_fill = PatternFill(fill_type="solid", fgColor="1F4E78")
+    header_font = Font(bold=True, color="FFFFFF")
+    for cell in worksheet[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+
+    sample_size = min(len(df), 50) if hasattr(df, "__len__") else 0
+    column_offset = 1
+    if include_index:
+        sample_index = df.index[:sample_size]
+        index_width = max(
+            [len(str(value)) for value in sample_index] + [12],
+        )
+        worksheet.column_dimensions["A"].width = min(index_width + 2, 26)
+        column_offset = 2
+
+    for column_position, column_name in enumerate(df.columns, start=column_offset):
+        sample_values = df[column_name].head(sample_size).tolist()
+        max_length = max(
+            [len(str(column_name))] + [len(str(value)) for value in sample_values] + [10]
+        )
+        worksheet.column_dimensions[get_column_letter(column_position)].width = min(
+            max_length + 2, 28
+        )
+
+
+def write_export_sheet(writer, sheet_name, df, *, include_index=False):
+    df.to_excel(writer, sheet_name=sheet_name, index=include_index)
+    worksheet = writer.sheets[sheet_name]
+    style_export_worksheet(worksheet, df, include_index=include_index)
+
+
+def build_results_workbook(sheet_specs):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        for sheet_spec in sheet_specs:
+            write_export_sheet(
+                writer,
+                sheet_spec["sheet_name"],
+                sheet_spec["dataframe"],
+                include_index=sheet_spec.get("include_index", False),
+            )
+    output.seek(0)
+    return output.getvalue()
+
+
+def build_plot_coordinates(coordinates, U=None, scale_factor=0.0):
+    plot_coordinates = np.array(coordinates, dtype=float, copy=True)
+    if U is None:
+        return plot_coordinates
+    displacement_matrix = np.asarray(U, dtype=float).reshape(-1, 2)
+    return plot_coordinates + scale_factor * displacement_matrix
+
+
+def element_node_indices_list(elements, node_index):
+    return [
+        [node_index[int(element[f"n{i}"])] for i in range(1, 5)]
+        for _, element in elements.iterrows()
+    ]
+
+
+def average_element_result_to_nodes(elements, node_index, element_results, result_column):
+    value_by_element = element_results.set_index("element")[result_column].to_dict()
+    nodal_sum = np.zeros(len(node_index), dtype=float)
+    nodal_count = np.zeros(len(node_index), dtype=float)
+
+    for _, element in elements.iterrows():
+        element_id = int(element["id"])
+        if element_id not in value_by_element or pd.isna(value_by_element[element_id]):
+            continue
+
+        element_value = float(value_by_element[element_id])
+        node_ids = [int(element[f"n{i}"]) for i in range(1, 5)]
+        for node_id in node_ids:
+            idx = node_index[node_id]
+            nodal_sum[idx] += element_value
+            nodal_count[idx] += 1.0
+
+    return np.divide(
+        nodal_sum,
+        nodal_count,
+        out=np.zeros_like(nodal_sum),
+        where=nodal_count > 0.0,
+    )
+
+
+def build_quad_triangulation(elements, node_index, plot_coordinates):
+    triangles = []
+    for node_indices in element_node_indices_list(elements, node_index):
+        triangles.append([node_indices[0], node_indices[1], node_indices[2]])
+        triangles.append([node_indices[0], node_indices[2], node_indices[3]])
+
+    if not triangles:
+        return None
+
+    return mtri.Triangulation(
+        plot_coordinates[:, 0], plot_coordinates[:, 1], np.array(triangles, dtype=int)
+    )
+
+
+def draw_contour_mesh_overlay(ax, elements, node_index, plot_coordinates, bc_nodes):
+    for node_indices in element_node_indices_list(elements, node_index):
+        coords = np.array([plot_coordinates[idx] for idx in node_indices])
+        coords_closed = np.vstack((coords, coords[0]))
+        ax.plot(
+            coords_closed[:, 0],
+            coords_closed[:, 1],
+            color="0.2",
+            linewidth=0.8,
+            alpha=0.55,
+        )
+
+    if bc_nodes:
+        bc_coordinates = np.array(
+            [plot_coordinates[node_index[node_id]] for node_id in sorted(bc_nodes)]
+        )
+        ax.scatter(
+            bc_coordinates[:, 0],
+            bc_coordinates[:, 1],
+            s=28,
+            facecolors="none",
+            edgecolors="black",
+            linewidths=0.9,
+            zorder=3,
+        )
+
+
+def compute_animation_axis_limits(coordinates, U, scale_factor):
+    frames = [
+        np.asarray(coordinates, dtype=float),
+        build_plot_coordinates(coordinates, U, scale_factor),
+    ]
+    stacked = np.vstack(frames)
+    x_min = float(stacked[:, 0].min())
+    x_max = float(stacked[:, 0].max())
+    y_min = float(stacked[:, 1].min())
+    y_max = float(stacked[:, 1].max())
+
+    span_x = max(x_max - x_min, 1.0)
+    span_y = max(y_max - y_min, 1.0)
+    pad_x = 0.08 * span_x
+    pad_y = 0.08 * span_y
+    return (
+        x_min - pad_x,
+        x_max + pad_x,
+        y_min - pad_y,
+        y_max + pad_y,
+    )
+
+
+def animation_amplitude_factor(frame_index, frame_count):
+    if frame_count <= 1:
+        return 1.0
+    return float(np.sin(np.pi * frame_index / (frame_count - 1)))
+
+
+def scalar_animation_limits(base_values):
+    finite_values = np.asarray(base_values, dtype=float)
+    finite_values = finite_values[np.isfinite(finite_values)]
+    if finite_values.size == 0:
+        return -1.0, 1.0
+
+    value_min = min(0.0, float(finite_values.min()))
+    value_max = max(0.0, float(finite_values.max()))
+    if np.isclose(value_min, value_max):
+        delta = max(abs(value_min) * 1e-6, 1e-6)
+        return value_min - delta, value_max + delta
+    return value_min, value_max
+
+
+def save_animation_to_gif(fig, animation, interval_ms):
+    fps = max(1, int(round(1000.0 / max(interval_ms, 1))))
+    with tempfile.NamedTemporaryFile(
+        dir=Path.cwd(), suffix=".gif", delete=False
+    ) as tmp_file:
+        temp_path = Path(tmp_file.name)
+
+    try:
+        animation.save(str(temp_path), writer=PillowWriter(fps=fps), dpi=72)
+        return temp_path.read_bytes()
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+        plt.close(fig)
+
+
+def render_gif(gif_bytes):
+    if not gif_bytes:
+        return
+
+    encoded_gif = base64.b64encode(gif_bytes).decode("ascii")
+    st.markdown(
+        (
+            "<div style='width:100%; text-align:center;'>"
+            f"<img src='data:image/gif;base64,{encoded_gif}' "
+            "style='max-width:100%; height:auto; border-radius:4px;' />"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def create_deformation_animation_gif(
+    elements,
+    node_index,
+    coordinates,
+    U,
+    scale_factor,
+    bc_nodes,
+    frames,
+    interval_ms,
+):
+    if len(coordinates) == 0:
+        return None
+
+    fig, ax = plt.subplots(figsize=ANIMATION_FIGURE_SIZE)
+    x_min, x_max, y_min, y_max = compute_animation_axis_limits(
+        coordinates, U, scale_factor
+    )
+    ax.set_xlim(x_min, x_max)
+    ax.set_ylim(y_min, y_max)
+    ax.set_aspect("equal")
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.grid(True, alpha=0.2)
+
+    element_indices = element_node_indices_list(elements, node_index)
+    original_coordinates = np.asarray(coordinates, dtype=float)
+    for node_indices in element_indices:
+        coords = np.array([original_coordinates[idx] for idx in node_indices])
+        coords_closed = np.vstack((coords, coords[0]))
+        ax.plot(
+            coords_closed[:, 0],
+            coords_closed[:, 1],
+            color="0.6",
+            linestyle="--",
+            linewidth=1.0,
+        )
+
+    deformed_lines = []
+    for _ in element_indices:
+        (line,) = ax.plot([], [], color="#005bbb", linewidth=2.0)
+        deformed_lines.append(line)
+
+    bc_indices = [node_index[node_id] for node_id in sorted(bc_nodes)]
+    bc_scatter = None
+    if bc_indices:
+        initial_bc_coords = original_coordinates[bc_indices]
+        bc_scatter = ax.scatter(
+            initial_bc_coords[:, 0],
+            initial_bc_coords[:, 1],
+            s=32,
+            c="#b22222",
+            marker="s",
+            zorder=3,
+        )
+
+    title = ax.set_title("Animasi Deformasi")
+
+    def update(frame_index):
+        frame_scale = scale_factor * animation_amplitude_factor(frame_index, frames)
+        animated_coordinates = build_plot_coordinates(coordinates, U, frame_scale)
+
+        for line, node_indices in zip(deformed_lines, element_indices):
+            coords = np.array([animated_coordinates[idx] for idx in node_indices])
+            coords_closed = np.vstack((coords, coords[0]))
+            line.set_data(coords_closed[:, 0], coords_closed[:, 1])
+
+        if bc_scatter is not None:
+            bc_scatter.set_offsets(animated_coordinates[bc_indices])
+
+        title.set_text(f"Animasi Deformasi - Skala saat ini: {frame_scale:.3g}")
+        artists = list(deformed_lines)
+        if bc_scatter is not None:
+            artists.append(bc_scatter)
+        artists.append(title)
+        return artists
+
+    animation = FuncAnimation(
+        fig,
+        update,
+        frames=max(int(frames), 2),
+        interval=int(interval_ms),
+        blit=False,
+        repeat=True,
+    )
+    return save_animation_to_gif(fig, animation, interval_ms)
+
+
+def create_scalar_contour_animation_gif(
+    elements,
+    node_index,
+    coordinates,
+    U,
+    scale_factor,
+    bc_nodes,
+    base_values,
+    result_label,
+    unit_label,
+    cmap,
+    frames,
+    interval_ms,
+    title_prefix,
+):
+    if len(coordinates) == 0:
+        return None
+
+    value_min, value_max = scalar_animation_limits(base_values)
+    x_min, x_max, y_min, y_max = compute_animation_axis_limits(
+        coordinates, U, scale_factor
+    )
+    fig = plt.figure(figsize=ANIMATION_FIGURE_SIZE)
+    grid_spec = fig.add_gridspec(1, 2, width_ratios=[24, 1.1], wspace=0.08)
+    ax = fig.add_subplot(grid_spec[0, 0])
+    cax = fig.add_subplot(grid_spec[0, 1])
+    norm = Normalize(vmin=value_min, vmax=value_max)
+    colorbar = fig.colorbar(ScalarMappable(norm=norm, cmap=cmap), cax=cax)
+    colorbar.set_label(f"{result_label} ({unit_label})")
+
+    def update(frame_index):
+        ax.clear()
+
+        amplitude = animation_amplitude_factor(frame_index, frames)
+        animated_coordinates = build_plot_coordinates(
+            coordinates, U, scale_factor * amplitude
+        )
+        animated_values = np.asarray(base_values, dtype=float) * amplitude
+        triangulation = build_quad_triangulation(
+            elements, node_index, animated_coordinates
+        )
+        if triangulation is None:
+            return []
+
+        ax.tripcolor(
+            triangulation,
+            animated_values,
+            shading="gouraud",
+            cmap=cmap,
+            vmin=value_min,
+            vmax=value_max,
+        )
+
+        draw_contour_mesh_overlay(
+            ax, elements, node_index, animated_coordinates, bc_nodes
+        )
+        ax.set_xlim(x_min, x_max)
+        ax.set_ylim(y_min, y_max)
+        ax.set_aspect("equal")
+        ax.set_title(f"{title_prefix} {result_label} - faktor {amplitude:.3f}")
+        ax.set_xlabel("X")
+        ax.set_ylabel("Y")
+        ax.grid(True, alpha=0.12)
+        return []
+
+    animation = FuncAnimation(
+        fig,
+        update,
+        frames=max(int(frames), 2),
+        interval=int(interval_ms),
+        blit=False,
+        repeat=True,
+    )
+    return save_animation_to_gif(fig, animation, interval_ms)
+
+
+def plot_mesh(
+    nodes,
+    elements,
+    node_index,
+    coordinates,
+    U,
+    scale_factor,
+    bc_nodes,
+    critical_node_id=None,
+    critical_element_id=None,
+):
+    fig, ax = plt.subplots(figsize=(9, 6))
+    plot_coordinates = build_plot_coordinates(coordinates, U, scale_factor)
+
+    for _, element in elements.iterrows():
+        node_ids = [int(element[f"n{i}"]) for i in range(1, 5)]
+        coords = np.array([coordinates[node_index[node_id]] for node_id in node_ids])
+        coords_closed = np.vstack((coords, coords[0]))
+        ax.plot(
+            coords_closed[:, 0],
+            coords_closed[:, 1],
+            color="0.55",
+            linestyle="--",
+            linewidth=1.0,
+        )
+
+        coords_deformed = np.array(
+            [plot_coordinates[node_index[node_id]] for node_id in node_ids]
+        )
+        coords_deformed_closed = np.vstack((coords_deformed, coords_deformed[0]))
+        ax.plot(
+            coords_deformed_closed[:, 0],
+            coords_deformed_closed[:, 1],
+            color="#005bbb",
+            linewidth=1.8,
+        )
+
+    for _, node in nodes.iterrows():
+        node_id = int(node["id"])
+        idx = node_index[node_id]
+        x = coordinates[idx, 0]
+        y = coordinates[idx, 1]
+        ax.text(x, y, str(node_id), fontsize=8, color="black")
+        if node_id in bc_nodes:
+            ax.scatter(x, y, s=30, c="#b22222", marker="s", zorder=3)
+
+    if critical_node_id is not None and critical_node_id in node_index:
+        critical_node_coordinates = plot_coordinates[node_index[critical_node_id]]
+        ax.scatter(
+            critical_node_coordinates[0],
+            critical_node_coordinates[1],
+            s=90,
+            c="#d62828",
+            marker="o",
+            edgecolors="white",
+            linewidths=1.1,
+            zorder=5,
+            label=f"Node kritis Umax: {critical_node_id}",
+        )
+        ax.annotate(
+            f"Umax N{critical_node_id}",
+            xy=(critical_node_coordinates[0], critical_node_coordinates[1]),
+            xytext=(8, 8),
+            textcoords="offset points",
+            fontsize=8,
+            color="#8b0000",
+            bbox={"facecolor": "white", "alpha": 0.85, "edgecolor": "#d62828"},
+        )
+
+    if critical_element_id is not None:
+        critical_element_rows = elements[elements["id"] == critical_element_id]
+        if not critical_element_rows.empty:
+            critical_element = critical_element_rows.iloc[0]
+            critical_node_ids = [
+                int(critical_element[f"n{i}"]) for i in range(1, 5)
+            ]
+            critical_centroid = np.array(
+                [plot_coordinates[node_index[node_id]] for node_id in critical_node_ids]
+            ).mean(axis=0)
+            ax.scatter(
+                critical_centroid[0],
+                critical_centroid[1],
+                s=170,
+                c="#f77f00",
+                marker="*",
+                edgecolors="black",
+                linewidths=0.8,
+                zorder=5,
+                label=f"Elemen kritis VM: {critical_element_id}",
+            )
+            ax.annotate(
+                f"VMmax E{critical_element_id}",
+                xy=(critical_centroid[0], critical_centroid[1]),
+                xytext=(8, -16),
+                textcoords="offset points",
+                fontsize=8,
+                color="#8c4f00",
+                bbox={"facecolor": "white", "alpha": 0.85, "edgecolor": "#f77f00"},
+            )
+
+    ax.set_aspect("equal")
+    ax.set_title("Mesh Asli (abu-abu) dan Deformasi (biru)")
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.grid(True, alpha=0.2)
+    if critical_node_id is not None or critical_element_id is not None:
+        ax.legend(loc="upper right")
+    fig.tight_layout()
+    return fig
+
+
+def plot_scalar_contour(
+    elements,
+    node_index,
+    coordinates,
+    U,
+    scale_factor,
+    bc_nodes,
+    nodal_values,
+    title_prefix,
+    result_label,
+    unit_label,
+    use_deformed_shape,
+    cmap,
+    figure_size=(9, 6),
+):
+    plot_coordinates = build_plot_coordinates(
+        coordinates,
+        U if use_deformed_shape else None,
+        scale_factor if use_deformed_shape else 0.0,
+    )
+    triangulation = build_quad_triangulation(elements, node_index, plot_coordinates)
+    if triangulation is None:
+        return None
+
+    nodal_values = np.asarray(nodal_values, dtype=float)
+    finite_values = nodal_values[np.isfinite(nodal_values)]
+    if finite_values.size == 0:
+        return None
+
+    value_min = float(finite_values.min())
+    value_max = float(finite_values.max())
+
+    fig, ax = plt.subplots(figsize=figure_size)
+    if np.isclose(value_min, value_max):
+        delta = max(abs(value_min) * 1e-6, 1e-6)
+        contour = ax.tripcolor(
+            triangulation,
+            nodal_values,
+            shading="gouraud",
+            cmap=cmap,
+            vmin=value_min - delta,
+            vmax=value_max + delta,
+        )
+    else:
+        levels = np.linspace(value_min, value_max, 16)
+        contour = ax.tricontourf(
+            triangulation,
+            nodal_values,
+            levels=levels,
+            cmap=cmap,
+        )
+        ax.tricontour(
+            triangulation,
+            nodal_values,
+            levels=levels,
+            colors="0.35",
+            linewidths=0.35,
+            alpha=0.25,
+        )
+
+    draw_contour_mesh_overlay(ax, elements, node_index, plot_coordinates, bc_nodes)
+    geometry_label = "Bentuk terdeformasi" if use_deformed_shape else "Mesh asli"
+    colorbar = fig.colorbar(contour, ax=ax, pad=0.02)
+    colorbar.set_label(f"{result_label} ({unit_label})")
+    ax.set_aspect("equal")
+    ax.set_title(f"{title_prefix} {result_label} - {geometry_label}")
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.grid(True, alpha=0.12)
+    fig.tight_layout()
+    return fig
+
+
+def plot_stress_contour(
+    elements,
+    node_index,
+    coordinates,
+    U,
+    scale_factor,
+    bc_nodes,
+    element_results,
+    result_column,
+    use_deformed_shape,
+):
+    if element_results.empty:
+        return None
+
+    nodal_values = average_element_result_to_nodes(
+        elements, node_index, element_results, result_column
+    )
+    result_label = STRESS_CONTOUR_LABELS.get(result_column, result_column)
+    return plot_scalar_contour(
+        elements,
+        node_index,
+        coordinates,
+        U,
+        scale_factor,
+        bc_nodes,
+        nodal_values,
+        "Kontur Tegangan",
+        result_label,
+        "MPa",
+        use_deformed_shape,
+        STRESS_CONTOUR_CMAP,
+    )
+
+
+def displacement_values_from_vector(U, component):
+    displacement_matrix = np.asarray(U, dtype=float).reshape(-1, 2)
+    component_index = 0 if component == "Ux" else 1
+    return displacement_matrix[:, component_index]
+
+
+def plot_displacement_contour(
+    elements,
+    node_index,
+    coordinates,
+    U,
+    scale_factor,
+    bc_nodes,
+    component,
+    use_deformed_shape,
+):
+    nodal_values = displacement_values_from_vector(U, component)
+    return plot_scalar_contour(
+        elements,
+        node_index,
+        coordinates,
+        U,
+        scale_factor,
+        bc_nodes,
+        nodal_values,
+        "Kontur Deformasi",
+        component,
+        "satuan model",
+        use_deformed_shape,
+        DISPLACEMENT_CONTOUR_CMAP,
+        figure_size=ANIMATION_FIGURE_SIZE,
+    )
+
+
+def stress_state_text(value):
+    if value > 1e-12:
+        return "tarik", "#2e7d32"
+    if value < -1e-12:
+        return "tekan", "#d62828"
+    return "netral", "#444444"
+
+
+def sketch_condition_text(s1, s2):
+    if s1 >= 0.0 and s2 >= 0.0:
+        return "KONDISI : TARIK DOMINAN", "(Principal Tension Zone)", "#7b2cbf"
+    if s1 <= 0.0 and s2 <= 0.0:
+        return "KONDISI : TEKAN DUA ARAH", "(Biaxial Compression)", "#1d4ed8"
+    return "KONDISI : TARIK-TEKAN CAMPURAN", "(Mixed Principal State)", "#7b2cbf"
+
+
+def crack_annotation_from_sigma1(s1, theta_crack_deg):
+    if s1 > 1e-12:
+        return (
+            f"{float(theta_crack_deg):+.3f} deg",
+            "Berpotensi terjadi retak tarik primer",
+            "#d62828",
+        )
+    return ("-", "Tidak terjadi retak tarik primer", "#d62828")
+
+
+def direction_vector_from_ccw_angle(angle_deg, length):
+    theta = np.radians(angle_deg)
+    return np.array([length * np.cos(theta), length * np.sin(theta)])
+
+
+def ray_rectangle_intersection(angle_deg, half_width, half_height):
+    direction = direction_vector_from_ccw_angle(angle_deg, 1.0)
+    scales = []
+    if abs(direction[0]) > 1e-12:
+        scales.append(half_width / abs(direction[0]))
+    if abs(direction[1]) > 1e-12:
+        scales.append(half_height / abs(direction[1]))
+    scale = min(scales) if scales else 0.0
+    return direction * scale
+
+
+def draw_angle_arc(ax, angle_ccw_deg, radius, color, center):
+    visual_angle_deg = float(angle_ccw_deg)
+    arc_angles = np.linspace(0.0, visual_angle_deg, 120)
+    x_arc = center[0] + radius * np.cos(np.radians(arc_angles))
+    y_arc = center[1] + radius * np.sin(np.radians(arc_angles))
+    ax.plot(x_arc, y_arc, color=color, linewidth=2.0)
+
+    if len(x_arc) >= 6:
+        ax.annotate(
+            "",
+            xy=(x_arc[-1], y_arc[-1]),
+            xytext=(x_arc[-6], y_arc[-6]),
+            arrowprops={"arrowstyle": "->", "color": color, "linewidth": 2.0},
+        )
+
+    end_angle = visual_angle_deg
+    text_radius = radius + 0.12
+    text_x = center[0] + text_radius * np.cos(np.radians(end_angle))
+    text_y = center[1] + text_radius * np.sin(np.radians(end_angle))
+    text_on_right = text_x >= center[0]
+    text_x += 0.03 if text_on_right else -0.03
+    vertical_sign = 1.0 if angle_ccw_deg >= 0.0 else -1.0
+    min_vertical_gap = 0.40 if abs(angle_ccw_deg) < 15.0 else 0.28
+    text_y = center[1] + vertical_sign * max(
+        abs(text_y - center[1]) + 0.08,
+        min_vertical_gap,
+    )
+    x_min, x_max = ax.get_xlim()
+    y_min, y_max = ax.get_ylim()
+    x_padding = 0.16
+    y_padding = 0.14
+    if text_on_right:
+        y_axis_clearance = center[0] + (1.18 if abs(angle_ccw_deg) < 15.0 else 1.05)
+        text_x = max(text_x, y_axis_clearance)
+        text_x = min(text_x, x_max - x_padding)
+    else:
+        text_x = max(text_x, x_min + x_padding)
+    text_y = min(max(text_y, y_min + y_padding), y_max - y_padding)
+    ax.text(
+        text_x,
+        text_y,
+        f"{angle_ccw_deg:+.3f} deg",
+        color=color,
+        fontsize=11,
+        fontweight="bold",
+        ha="right" if text_on_right else "left",
+        va="center",
+    )
+
+
+def wrap_sketch_text(text, width):
+    return textwrap.fill(
+        text,
+        width=width,
+        break_long_words=False,
+        break_on_hyphens=False,
+    )
+
+
+def sketch_text_line_count(text):
+    return text.count("\n") + 1
+
+
+def make_text_area(text, color, fontsize, fontweight="bold"):
+    return TextArea(
+        text,
+        textprops={
+            "color": color,
+            "fontsize": fontsize,
+            "fontweight": fontweight,
+            "family": "DejaVu Sans",
+        },
+    )
+
+
+def add_centered_box(ax, child, anchor_x, anchor_y, loc):
+    anchored_box = AnchoredOffsetbox(
+        loc=loc,
+        child=child,
+        frameon=False,
+        bbox_to_anchor=(anchor_x, anchor_y),
+        bbox_transform=ax.transAxes,
+        borderpad=0.0,
+        pad=0.0,
+    )
+    ax.add_artist(anchored_box)
+
+
+def _draw_principal_stress_sketch(ax, row, subplot_title):
+    has_gauss_point = "gauss_point" in row
+    element_id = int(row["element"]) if "element" in row else None
+    s1 = float(row["s1"])
+    s2 = float(row["s2"])
+    theta1_display = principal_angle_display_deg(row["principal_angle_1_deg"])
+    theta2_display = perpendicular_angle_from_principal_deg(theta1_display)
+    theta1_color = "#2e7d32" if theta1_display >= 0.0 else "#d62828"
+
+    s1_state, s1_color = stress_state_text(s1)
+    s2_state, s2_color = stress_state_text(s2)
+    condition_text, condition_subtext, condition_color = sketch_condition_text(s1, s2)
+    theta_retak_text, crack_status_text, crack_status_color = crack_annotation_from_sigma1(
+        s1, theta2_display
+    )
+    theta_retak_color = "#d62828"
+    if theta_retak_text not in {"-", ""}:
+        theta_retak_value = float(theta_retak_text.replace(" deg", ""))
+        theta_retak_color = "#2e7d32" if theta_retak_value >= 0.0 else "#d62828"
+    crack_status_text = wrap_sketch_text(crack_status_text, 23)
+    sketch_y_offset = -0.08
+    sketch_xlim = (-1.55, 1.80)
+    sketch_ylim = (-2.80, 2.15)
+
+    ax.set_xlim(*sketch_xlim)
+    ax.set_ylim(*sketch_ylim)
+
+    ax.add_patch(
+        Rectangle(
+            (0.01, 0.01),
+            0.98,
+            0.98,
+            transform=ax.transAxes,
+            fill=False,
+            edgecolor="#5b8cc8",
+            linewidth=1.8,
+            zorder=20,
+            clip_on=False,
+        )
+    )
+
+    ax.add_patch(
+        Rectangle(
+            (-0.38, sketch_y_offset - 0.22),
+            0.76,
+            0.44,
+            facecolor="#e8a9a2",
+            edgecolor="0.2",
+            linewidth=1.6,
+            alpha=0.9,
+        )
+    )
+
+    ax.plot(
+        [-1.15, 1.15],
+        [sketch_y_offset, sketch_y_offset],
+        color="0.15",
+        linewidth=1.4,
+        dashes=(5, 5),
+    )
+    ax.plot(
+        [0.0, 0.0],
+        [sketch_y_offset - 1.05, sketch_y_offset + 1.05],
+        color="0.15",
+        linewidth=1.4,
+        dashes=(5, 5),
+    )
+    ax.annotate(
+        "",
+        xy=(1.18, sketch_y_offset),
+        xytext=(0.88, sketch_y_offset),
+        arrowprops={"arrowstyle": "-|>", "color": "black", "linewidth": 1.5},
+    )
+    ax.annotate(
+        "",
+        xy=(0.0, sketch_y_offset + 1.08),
+        xytext=(0.0, sketch_y_offset + 0.78),
+        arrowprops={"arrowstyle": "-|>", "color": "black", "linewidth": 1.5},
+    )
+    ax.text(1.22, sketch_y_offset - 0.04, "x", fontsize=11)
+    ax.text(-0.04, sketch_y_offset + 1.12, "y", fontsize=11)
+
+    half_width = 0.38
+    half_height = 0.22
+    principal_axis_length = 1.20
+    if s1 > 1e-12:
+        crack_axis = direction_vector_from_ccw_angle(theta2_display, principal_axis_length)
+        ax.plot(
+            [-crack_axis[0], crack_axis[0]],
+            [sketch_y_offset - crack_axis[1], sketch_y_offset + crack_axis[1]],
+            color="#ff4d4d",
+            linewidth=1.4,
+            dashes=(5, 4),
+            alpha=0.9,
+        )
+
+    sigma1_tail = direction_vector_from_ccw_angle(theta1_display + 180.0, 0.62)
+    ax.plot(
+        [0.0, sigma1_tail[0]],
+        [sketch_y_offset, sketch_y_offset + sigma1_tail[1]],
+        color="0.1",
+        linewidth=1.4,
+        dashes=(5, 5),
+    )
+
+    sigma1_start = ray_rectangle_intersection(theta1_display, half_width, half_height)
+    sigma1_tip = sigma1_start + direction_vector_from_ccw_angle(theta1_display, 0.72)
+    angle_arc_radius = max(0.68, np.linalg.norm(sigma1_tip) - 0.08)
+    ax.annotate(
+        "",
+        xy=(sigma1_tip[0], sigma1_tip[1] + sketch_y_offset),
+        xytext=(sigma1_start[0], sigma1_start[1] + sketch_y_offset),
+        arrowprops={"arrowstyle": "->", "color": "#2e7d32", "linewidth": 2.2},
+    )
+
+    draw_angle_arc(
+        ax,
+        theta1_display,
+        radius=angle_arc_radius,
+        color=theta1_color,
+        center=(0.0, sketch_y_offset),
+    )
+
+    if element_id is not None and not has_gauss_point:
+        ax.text(
+            0.045,
+            0.945,
+            f"{element_id}",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+            fontsize=12,
+            fontweight="bold",
+            bbox={
+                "facecolor": "white",
+                "edgecolor": "black",
+                "linewidth": 1.2,
+                "boxstyle": "square,pad=0.42",
+            },
+        )
+
+    header_line_1 = HPacker(
+        children=[
+            make_text_area(r"$\sigma_1$ = " + f"{s1:+.3f} MPa", "#111111", 9.5),
+            make_text_area(f" ({s1_state})", s1_color, 9.5),
+        ],
+        align="center",
+        pad=0,
+        sep=2,
+    )
+    header_line_2 = HPacker(
+        children=[
+            make_text_area(r"$\sigma_2$ = " + f"{s2:+.3f} MPa", "#111111", 9.5),
+            make_text_area(f" ({s2_state})", s2_color, 9.5),
+        ],
+        align="center",
+        pad=0,
+        sep=2,
+    )
+    header_box = VPacker(
+        children=[header_line_1, header_line_2],
+        align="center",
+        pad=0,
+        sep=2,
+    )
+    add_centered_box(ax, header_box, 0.54, 0.945, "upper center")
+
+    theta_lines = VPacker(
+        children=[
+            make_text_area(
+                r"$\theta\ (\sigma_1)$ = " + f"{theta1_display:+.3f}" + r"$^\circ$",
+                theta1_color,
+                11.5,
+            ),
+            make_text_area(
+                r"$\theta_{retak}$ = "
+                + (
+                    theta_retak_text.replace(" deg", "") + r"$^\circ$"
+                    if theta_retak_text != "-"
+                    else "-"
+                ),
+                theta_retak_color,
+                11.5,
+            ),
+        ],
+        align="center",
+        pad=0,
+        sep=1,
+    )
+    condition_children = [
+        theta_lines,
+        make_text_area(condition_text, condition_color, 9.8),
+        make_text_area(condition_subtext, condition_color, 9.5),
+        make_text_area(crack_status_text, crack_status_color, 10.1),
+    ]
+    condition_box = VPacker(
+        children=condition_children,
+        align="center",
+        pad=0,
+        sep=4,
+    )
+    add_centered_box(ax, condition_box, 0.50, 0.075, "lower center")
+
+    ax.set_xlim(*sketch_xlim)
+    ax.set_ylim(*sketch_ylim)
+    ax.set_aspect("equal", adjustable="box")
+    ax.axis("off")
+    if element_id is None or has_gauss_point:
+        ax.set_title(subplot_title)
+
+
+def plot_principal_stress_sketches(element_results):
+    if element_results.empty:
+        return None
+
+    n_elements = len(element_results)
+    ncols = min(3, max(1, n_elements))
+    nrows = int(np.ceil(n_elements / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(7.0 * ncols, 5.4 * nrows))
+    axes = np.atleast_1d(axes).flatten()
+
+    for ax, (_, row) in zip(axes, element_results.iterrows()):
+        _draw_principal_stress_sketch(ax, row, f"Elemen {int(row['element'])}")
+
+    for ax in axes[n_elements:]:
+        ax.axis("off")
+
+    fig.suptitle("Sketsa Tegangan Utama per Elemen", fontsize=14)
+    fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.97])
+    return fig
+
+
+def plot_principal_stress_sketches_for_element_gauss(gauss_results, element_id):
+    element_rows = gauss_results[gauss_results["element"] == element_id].sort_values(
+        "gauss_point"
+    )
+    if element_rows.empty:
+        return None
+
+    n_points = len(element_rows)
+    ncols = min(2, max(1, n_points))
+    nrows = int(np.ceil(n_points / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(7.0 * ncols, 5.4 * nrows))
+    axes = np.atleast_1d(axes).flatten()
+
+    for ax, (_, row) in zip(axes, element_rows.iterrows()):
+        _draw_principal_stress_sketch(
+            ax,
+            row,
+            (
+                f"Elemen {element_id} - GP {int(row['gauss_point'])}\n"
+                f"xi={float(row['xi']):.4f}, eta={float(row['eta']):.4f}"
+            ),
+        )
+
+    for ax in axes[n_points:]:
+        ax.axis("off")
+
+    fig.suptitle(
+        f"Sketsa Tegangan Utama Titik Gauss Elemen {element_id}", fontsize=14
+    )
+    fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.97])
+    return fig
+
+
+def _draw_mohr_circle(ax, row, subplot_title):
+    sx = float(row["sx"])
+    sy = float(row["sy"])
+    txy = float(row["txy"])
+    s1 = float(row["s1"])
+    s2 = float(row["s2"])
+    center = 0.5 * (sx + sy)
+    radius = np.sqrt(((sx - sy) / 2.0) ** 2 + txy**2)
+
+    theta = np.linspace(0.0, 2.0 * np.pi, 400)
+    sigma_circle = center + radius * np.cos(theta)
+    tau_circle = radius * np.sin(theta)
+
+    ax.plot(sigma_circle, tau_circle, color="#005bbb", linewidth=2.0)
+    ax.axhline(0.0, color="0.25", linewidth=0.8)
+    ax.axvline(0.0, color="0.25", linewidth=0.8)
+
+    ax.scatter([sx, sy], [txy, -txy], color="#b22222", s=35, zorder=3)
+    ax.scatter([s1, s2, center], [0.0, 0.0, 0.0], color="#2e8b57", s=30, zorder=3)
+
+    ax.annotate("A", (sx, txy), textcoords="offset points", xytext=(6, 6), fontsize=9)
+    ax.annotate("B", (sy, -txy), textcoords="offset points", xytext=(6, -12), fontsize=9)
+    ax.annotate("sigma1", (s1, 0.0), textcoords="offset points", xytext=(6, 6), fontsize=9)
+    ax.annotate("sigma2", (s2, 0.0), textcoords="offset points", xytext=(6, 6), fontsize=9)
+    ax.annotate("C", (center, 0.0), textcoords="offset points", xytext=(6, 6), fontsize=9)
+
+    margin = max(radius * 0.2, 1e-9)
+    x_min = min(sx, sy, s1, s2, center) - margin
+    x_max = max(sx, sy, s1, s2, center) + margin
+    y_lim = radius + margin
+    if y_lim <= 0.0:
+        y_lim = 1.0
+
+    ax.set_xlim(x_min, x_max)
+    ax.set_ylim(-y_lim, y_lim)
+    ax.set_aspect("equal", adjustable="box")
+    ax.grid(True, alpha=0.25)
+    ax.set_title(subplot_title)
+    ax.set_xlabel("Tegangan Normal, sigma (MPa)")
+    ax.set_ylabel("Tegangan Geser, tau (MPa)")
+
+    summary = (
+        f"C={center:.3g}\n"
+        f"R={radius:.3g}\n"
+        f"sigma1={s1:.3g}\n"
+        f"sigma2={s2:.3g}"
+    )
+    ax.text(
+        0.02,
+        0.98,
+        summary,
+        transform=ax.transAxes,
+        va="top",
+        ha="left",
+        fontsize=8,
+        bbox={"facecolor": "white", "alpha": 0.85, "edgecolor": "0.7"},
+    )
+
+
+def plot_mohr_circles(element_results):
+    if element_results.empty:
+        return None
+
+    n_elements = len(element_results)
+    ncols = min(3, max(1, n_elements))
+    nrows = int(np.ceil(n_elements / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5.5 * ncols, 4.5 * nrows))
+    axes = np.atleast_1d(axes).flatten()
+
+    for ax, (_, row) in zip(axes, element_results.iterrows()):
+        _draw_mohr_circle(ax, row, f"Elemen {int(row['element'])}")
+
+    for ax in axes[n_elements:]:
+        ax.axis("off")
+
+    fig.suptitle("Lingkaran Mohr per Elemen", fontsize=14)
+    fig.tight_layout()
+    return fig
+
+
+def plot_mohr_circles_for_element_gauss(gauss_results, element_id):
+    element_rows = gauss_results[gauss_results["element"] == element_id].sort_values(
+        "gauss_point"
+    )
+    if element_rows.empty:
+        return None
+
+    n_points = len(element_rows)
+    ncols = min(2, max(1, n_points))
+    nrows = int(np.ceil(n_points / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5.5 * ncols, 4.5 * nrows))
+    axes = np.atleast_1d(axes).flatten()
+
+    for ax, (_, row) in zip(axes, element_rows.iterrows()):
+        _draw_mohr_circle(
+            ax,
+            row,
+            (
+                f"Elemen {element_id} - GP {int(row['gauss_point'])}\n"
+                f"xi={float(row['xi']):.4f}, eta={float(row['eta']):.4f}"
+            ),
+        )
+
+    for ax in axes[n_points:]:
+        ax.axis("off")
+
+    fig.suptitle(f"Lingkaran Mohr Titik Gauss Elemen {element_id}", fontsize=14)
+    fig.tight_layout()
+    return fig
+
+
+def build_template_workbook():
+    nodes = pd.DataFrame(
+        [
+            [1, 0.0, 0.0],
+            [2, 100.0, 0.0],
+            [3, 200.0, 0.0],
+            [4, 300.0, 0.0],
+            [5, 300.0, 50.0],
+            [6, 200.0, 50.0],
+            [7, 100.0, 50.0],
+            [8, 0.0, 50.0],
+            [9, 300.0, 100.0],
+            [10, 200.0, 100.0],
+            [11, 100.0, 100.0],
+            [12, 0.0, 100.0],
+            [13, 300.0, 150.0],
+            [14, 200.0, 150.0],
+            [15, 100.0, 150.0],
+            [16, 0.0, 150.0],
+        ],
+        columns=["id", "x", "y"],
+    )
+    elements = pd.DataFrame(
+        [
+            [1, 1, 2, 7, 8, 2.10e5, 0.31, 10.0],
+            [2, 2, 3, 6, 7, 2.10e5, 0.31, 10.0],
+            [3, 3, 4, 5, 6, 2.10e5, 0.31, 10.0],
+            [4, 8, 7, 11, 12, 2.10e5, 0.31, 10.0],
+            [5, 6, 5, 9, 10, 2.10e5, 0.31, 10.0],
+            [6, 12, 11, 15, 16, 2.10e5, 0.31, 10.0],
+            [7, 11, 10, 14, 15, 2.10e5, 0.31, 10.0],
+            [8, 10, 9, 13, 14, 2.10e5, 0.31, 10.0],
+        ],
+        columns=["id", "n1", "n2", "n3", "n4", "E", "nu", "t"],
+    )
+    loads = pd.DataFrame([[13, 0.0, -4000.0]], columns=["node", "Fx", "Fy"])
+    bc = pd.DataFrame(
+        [
+            [1, 1, 1, 0.0, 0.0],
+            [8, 1, 1, 0.0, 0.0],
+            [12, 1, 1, 0.0, 0.0],
+            [16, 1, 1, 0.0, 0.0],
+        ],
+        columns=["node", "ux", "uy", "ux_val", "uy_val"],
+    )
+    edge_loads = pd.DataFrame(
+        [
+            [6, 3, 0.0, -5.0],
+            [7, 3, 0.0, -5.0],
+            [8, 3, 0.0, -5.0],
+        ],
+        columns=["element", "edge", "qx", "qy"],
+    )
+    info = pd.DataFrame(
+        [
+            ["Nodes", "id, x, y", "Koordinat node, gunakan satuan yang konsisten."],
+            [
+                "Elements",
+                "id, n1, n2, n3, n4, E, nu, t",
+                "Urutan node harus berlawanan arah jarum jam.",
+            ],
+            ["Loads", "node, Fx, Fy", "Beban terpusat nodal."],
+            [
+                "BC",
+                "node, ux, uy, ux_val, uy_val",
+                "1 = dikunci, 0 = bebas. Nilai default displacement = 0.",
+            ],
+            [
+                "EdgeLoads",
+                "element, edge, qx, qy",
+                "Beban garis seragam per panjang pada edge 1-4 dalam koordinat global.",
+            ],
+        ],
+        columns=["Sheet", "Kolom", "Keterangan"],
+    )
+
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        info.to_excel(writer, sheet_name="Info", index=False)
+        nodes.to_excel(writer, sheet_name="Nodes", index=False)
+        elements.to_excel(writer, sheet_name="Elements", index=False)
+        loads.to_excel(writer, sheet_name="Loads", index=False)
+        bc.to_excel(writer, sheet_name="BC", index=False)
+        edge_loads.to_excel(writer, sheet_name="EdgeLoads", index=False)
+    output.seek(0)
+    return output.getvalue()
+
+
+def build_fallback_ulm_logo_svg():
+    return """
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240">
+      <defs>
+        <linearGradient id="goldGlow" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#fff27a"/>
+          <stop offset="100%" stop-color="#ffd100"/>
+        </linearGradient>
+      </defs>
+      <polygon
+        points="120,12 192,48 205,126 165,220 75,220 35,126 48,48"
+        fill="url(#goldGlow)"
+        stroke="#d62828"
+        stroke-width="10"
+        stroke-linejoin="round"
+      />
+      <circle cx="120" cy="115" r="63" fill="#ffffff" stroke="#d62828" stroke-width="12"/>
+      <circle cx="120" cy="115" r="47" fill="#fff6cf" stroke="#d62828" stroke-width="4"/>
+      <path d="M72 112 C88 82, 104 74, 120 86 C104 92, 94 102, 82 120 Z" fill="#20242c"/>
+      <path d="M168 112 C152 82, 136 74, 120 86 C136 92, 146 102, 158 120 Z" fill="#20242c"/>
+      <path d="M108 95 L120 138 L132 95 L120 104 Z" fill="#20242c"/>
+      <circle cx="120" cy="120" r="9" fill="#d62828"/>
+      <text x="120" y="58" text-anchor="middle" font-size="18" font-family="Arial, sans-serif" font-weight="700" fill="#ffffff">UNIVERSITAS</text>
+      <text x="120" y="188" text-anchor="middle" font-size="16" font-family="Arial, sans-serif" font-weight="700" fill="#ffffff">LAMBUNG MANGKURAT</text>
+      <text x="120" y="162" text-anchor="middle" font-size="18" font-family="Arial, sans-serif" font-weight="800" fill="#d62828">ULM</text>
+    </svg>
+    """
+
+
+def image_path_to_data_uri(image_path):
+    suffix = image_path.suffix.lower()
+    mime_type_map = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".svg": "image/svg+xml",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+    }
+    mime_type = mime_type_map.get(suffix, "application/octet-stream")
+    encoded_bytes = base64.b64encode(image_path.read_bytes()).decode("ascii")
+    return f"data:{mime_type};base64,{encoded_bytes}"
+
+
+def get_header_logo_data_uri():
+    candidate_names = [
+        "Logo_ULM.png",
+        "Logo_ULM.svg",
+        "logo_ulm.png",
+        "logo_ulm.svg",
+        "ulm_logo.png",
+        "ulm_logo.svg",
+        "logo_ftulm.png",
+        "logo_ftulm.svg",
+        "logo.png",
+        "logo.svg",
+    ]
+    search_roots = [Path(__file__).resolve().parent, Path.cwd()]
+    for root_path in search_roots:
+        available_files = {
+            path.name.lower(): path for path in root_path.iterdir() if path.is_file()
+        }
+        for candidate_name in candidate_names:
+            candidate_path = root_path / candidate_name
+            if candidate_path.exists():
+                return image_path_to_data_uri(candidate_path)
+
+            # Streamlit Cloud runs on Linux, so "Logo_ULM.png" and "logo_ulm.png"
+            # are different files. Fall back to a case-insensitive directory lookup.
+            matched_path = available_files.get(candidate_name.lower())
+            if matched_path is not None:
+                return image_path_to_data_uri(matched_path)
+
+    fallback_svg = build_fallback_ulm_logo_svg().strip().encode("utf-8")
+    return f"data:image/svg+xml;base64,{base64.b64encode(fallback_svg).decode('ascii')}"
+
+
+def render_application_header():
+    logo_data_uri = get_header_logo_data_uri()
+    st.markdown(
+        f"""
+        <style>
+        .plane2d-hero {{
+            background:
+                radial-gradient(circle at top left, rgba(214, 40, 40, 0.10), transparent 28%),
+                linear-gradient(145deg, #0c111b 0%, #111827 100%);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 24px;
+            padding: 1.8rem 2rem;
+            margin: 0.2rem 0 1.2rem 0;
+            box-shadow: 0 22px 48px rgba(0, 0, 0, 0.22);
+        }}
+        .plane2d-hero-row {{
+            display: flex;
+            align-items: center;
+            gap: 1.4rem;
+        }}
+        .plane2d-logo-shell {{
+            flex: 0 0 168px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }}
+        .plane2d-logo-shell img {{
+            width: 150px;
+            max-width: 100%;
+            display: block;
+            filter: drop-shadow(0 10px 18px rgba(0, 0, 0, 0.28));
+        }}
+        .plane2d-copy {{
+            min-width: 0;
+        }}
+        .plane2d-kicker {{
+            color: #f3c969;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            font-size: 0.82rem;
+            font-weight: 700;
+            margin-bottom: 0.25rem;
+        }}
+        .plane2d-title {{
+            color: #f8fafc;
+            font-size: clamp(2.0rem, 3.6vw, 3.1rem);
+            line-height: 1.08;
+            font-weight: 800;
+            margin: 0;
+        }}
+        .plane2d-subtitle {{
+            color: #f8fafc;
+            font-size: clamp(1.15rem, 2.1vw, 1.55rem);
+            line-height: 1.25;
+            font-weight: 700;
+            margin-top: 0.2rem;
+        }}
+        .plane2d-meta {{
+            color: #e5e7eb;
+            font-size: 1.02rem;
+            line-height: 1.45;
+            font-weight: 600;
+            margin-top: 0.9rem;
+        }}
+        .plane2d-divider {{
+            height: 1px;
+            margin: 1.35rem 0 1.2rem 0;
+            background: linear-gradient(90deg, transparent, rgba(244, 244, 245, 0.85), transparent);
+        }}
+        .plane2d-disclaimer-title {{
+            color: #f8fafc;
+            font-size: 1.2rem;
+            font-weight: 800;
+            margin-bottom: 0.75rem;
+        }}
+        .plane2d-disclaimer-box {{
+            background: linear-gradient(145deg, rgba(87, 91, 19, 0.95), rgba(75, 78, 14, 0.98));
+            color: #f7f5cf;
+            border: 1px solid rgba(248, 250, 252, 0.08);
+            border-radius: 18px;
+            padding: 1.15rem 1.25rem 1rem 1.4rem;
+        }}
+        .plane2d-disclaimer-box ul {{
+            margin: 0;
+            padding-left: 1.2rem;
+        }}
+        .plane2d-disclaimer-box li {{
+            margin: 0 0 0.95rem 0;
+            line-height: 1.6;
+            font-size: 1rem;
+        }}
+        .plane2d-disclaimer-box li:last-child {{
+            margin-bottom: 0;
+        }}
+        @media (max-width: 900px) {{
+            .plane2d-hero {{
+                padding: 1.25rem 1rem;
+            }}
+            .plane2d-hero-row {{
+                flex-direction: column;
+                align-items: flex-start;
+            }}
+            .plane2d-logo-shell {{
+                flex-basis: auto;
+            }}
+            .plane2d-logo-shell img {{
+                width: 124px;
+            }}
+        }}
+        </style>
+        <section class="plane2d-hero">
+            <div class="plane2d-hero-row">
+                <div class="plane2d-logo-shell">
+                    <img src="{logo_data_uri}" alt="Logo Universitas Lambung Mangkurat" />
+                </div>
+                <div class="plane2d-copy">
+                    <div class="plane2d-kicker">Finite Element Method Application</div>
+                    <div class="plane2d-title">Analisis FEM Plane Stress & Strain 2D</div>
+                    <div class="plane2d-subtitle">(Elemen Segiempat 4 Node)</div>
+                    <div class="plane2d-meta">Pengembang: Ir. Darmansyah Tjitradi, MT., IPU</div>
+                    <div class="plane2d-meta">Fakultas Teknik Universitas Lambung Mangkurat</div>
+                </div>
+            </div>
+            <div class="plane2d-divider"></div>
+            <div class="plane2d-disclaimer-title">Disclaimer:</div>
+            <div class="plane2d-disclaimer-box">
+                <ul>
+                    <li>Aplikasi ini dikembangkan sebagai alat bantu pembelajaran dan penelitian dalam analisis struktur menggunakan Metode Elemen Hingga (Finite Element Method).</li>
+                    <li>Hasil analisis harus diverifikasi lebih lanjut oleh insinyur profesional yang kompeten sebelum digunakan dalam perancangan struktur.</li>
+                    <li>Pengguna bertanggung jawab sepenuhnya atas interpretasi dan penggunaan hasil analisis yang diperoleh dari aplikasi ini.</li>
+                </ul>
+            </div>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def write_local_template(template_bytes):
+    target = Path(__file__).resolve().with_name(TEMPLATE_FILENAME)
+    if target.exists():
+        return target
+    try:
+        target.write_bytes(template_bytes)
+        return target
+    except PermissionError:
+        fallback = Path.cwd() / TEMPLATE_FILENAME
+        if fallback.exists():
+            return fallback
+        fallback.write_bytes(template_bytes)
+        return fallback
+
+
+render_application_header()
+st.caption(
+    "Formulasi memakai elemen isoparametrik bilinear dengan integrasi Gauss 2x2. "
+    "Input dibaca dari Excel dan urutan node elemen harus berlawanan arah jarum jam."
+)
+st.caption(
+    "Semua output tegangan ditampilkan dalam MPa, dengan asumsi input material "
+    "tegangan memakai satuan kg/cm2 dan konversi 1 kg/cm2 = 0.1 MPa."
+)
+
+analysis_mode = st.selectbox("Tipe analisis", ["Plane Stress", "Plane Strain"])
+default_E = st.number_input(
+    "Modulus elastisitas default E (kg/cm2)", value=2.10e5, format="%.6g"
+)
+default_nu = st.number_input(
+    "Poisson ratio default", min_value=0.0, max_value=0.4999, value=0.31, format="%.4f"
+)
+default_t = st.number_input("Tebal default elemen (cm)", min_value=1e-9, value=10.0)
+concrete_fc = st.number_input(
+    "Kuat tekan beton fc' untuk Drucker-Prager (kg/cm2)",
+    min_value=1e-9,
+    value=25.0,
+    format="%.6g",
+)
+concrete_ft = st.number_input(
+    "Kuat tarik beton ft untuk Drucker-Prager (kg/cm2)",
+    min_value=1e-9,
+    value=2.5,
+    format="%.6g",
+)
+st.caption(
+    "Evaluasi Drucker-Prager memakai asumsi post-processing plane stress dengan "
+    "kalibrasi dari `fc'` dan `ft`, serta konvensi tegangan tarik bernilai positif."
+)
+
+template_bytes = build_template_workbook()
+local_template_path = write_local_template(template_bytes)
+local_example_path = Path(__file__).resolve().with_name(EXAMPLE_FILENAME)
+st.download_button(
+    "Unduh template Excel contoh",
+    data=template_bytes,
+    file_name="template_plane_stress_quad4.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
+st.info(
+    f"Jika tombol download tidak berjalan, template lokal otomatis disimpan di: `{local_template_path}`"
+)
+if local_example_path.exists():
+    st.info(
+        f"Contoh file Excel siap pakai juga tersedia di folder project: `{local_example_path}`"
+    )
+
+with st.expander("Format input Excel", expanded=False):
+    st.write("Sheet wajib: `Nodes`, `Elements`, `BC`.")
+    st.write("Sheet opsional: `Loads`, `EdgeLoads`.")
+    st.write("Kolom minimum:")
+    st.write("- `Nodes`: `id`, `x`, `y`")
+    st.write("- `Elements`: `id`, `n1`, `n2`, `n3`, `n4`")
+    st.write("- `BC`: `node`, `ux`, `uy`")
+    st.write("- `Loads`: `node`, `Fx`, `Fy`")
+    st.write("- `EdgeLoads`: `element`, `edge`, `qx`, `qy`")
+    st.write(
+        "Jika kolom `E`, `nu`, atau `t` tidak ada pada `Elements`, program memakai nilai default dari panel input."
+    )
+    st.write(
+        "Asumsi satuan saat ini: `E`, `fc'`, dan `ft` diinput dalam `kg/cm2`, sedangkan semua output tegangan ditampilkan dalam `MPa`."
+    )
+
+uploaded_file = st.file_uploader("Upload file Excel", type=["xlsx"])
+
+if uploaded_file:
+    try:
+        xls = pd.ExcelFile(uploaded_file)
+        nodes = read_required_sheet(xls, "Nodes", ["id", "x", "y"]).copy()
+        elements = read_required_sheet(
+            xls, "Elements", ["id", "n1", "n2", "n3", "n4"]
+        ).copy()
+        bc = read_required_sheet(xls, "BC", ["node", "ux", "uy"]).copy()
+        loads = read_optional_sheet(xls, "Loads", ["node", "Fx", "Fy"]).copy()
+        edge_loads = read_optional_sheet(
+            xls, "EdgeLoads", ["element", "edge", "qx", "qy"]
+        ).copy()
+
+        nodes["id"] = nodes["id"].astype(int)
+        elements["id"] = elements["id"].astype(int)
+        for column in ["n1", "n2", "n3", "n4"]:
+            elements[column] = elements[column].astype(int)
+        bc["node"] = bc["node"].astype(int)
+        if not loads.empty:
+            loads["node"] = loads["node"].astype(int)
+        if not edge_loads.empty:
+            edge_loads["element"] = edge_loads["element"].astype(int)
+            edge_loads["edge"] = edge_loads["edge"].astype(int)
+
+        if nodes["id"].duplicated().any():
+            raise ValueError("ID node harus unik.")
+        if elements["id"].duplicated().any():
+            raise ValueError("ID elemen harus unik.")
+
+        node_ids = nodes["id"].tolist()
+        node_index = {node_id: idx for idx, node_id in enumerate(node_ids)}
+        coordinates = nodes[["x", "y"]].to_numpy(dtype=float)
+
+        for _, element in elements.iterrows():
+            element_id = int(element["id"])
+            element_nodes = [int(element[f"n{i}"]) for i in range(1, 5)]
+            missing_nodes = [node_id for node_id in element_nodes if node_id not in node_index]
+            if missing_nodes:
+                raise ValueError(
+                    f"Elemen {element_id} memakai node yang tidak ada: {missing_nodes}"
+                )
+            coords = np.array([coordinates[node_index[node_id]] for node_id in element_nodes])
+            if signed_polygon_area(coords) <= 0.0:
+                raise ValueError(
+                    f"Elemen {element_id} memiliki urutan node tidak valid. Gunakan urutan berlawanan arah jarum jam."
                 )
 
-    with pen_right:
-        st.write("Keterangan penulangan torsi")
-        st.pyplot(
-            draw_torsion_detail_note_figure(
-                torsion_rep_zone, bw, h, cover, stirrup, db_torsion
-            ),
-            width="stretch"
+        if not loads.empty:
+            missing_load_nodes = [
+                int(node_id) for node_id in loads["node"] if int(node_id) not in node_index
+            ]
+            if missing_load_nodes:
+                raise ValueError(
+                    f"Ada node pada sheet Loads yang tidak ditemukan: {sorted(set(missing_load_nodes))}"
+                )
+
+        dof = 2 * len(nodes)
+        K = np.zeros((dof, dof))
+        F = np.zeros(dof)
+        element_lookup = {}
+        element_debug_data = []
+        global_labels = global_dof_labels(node_ids)
+
+        for _, element in elements.iterrows():
+            element_id = int(element["id"])
+            element_nodes = [int(element[f"n{i}"]) for i in range(1, 5)]
+            coords = np.array([coordinates[node_index[node_id]] for node_id in element_nodes])
+            E = row_value(element, "E", default_E)
+            nu = row_value(element, "nu", default_nu)
+            thickness = row_value(element, "t", default_t)
+
+            if E <= 0.0:
+                raise ValueError(f"Nilai E elemen {element_id} harus lebih besar dari nol.")
+            if thickness <= 0.0:
+                raise ValueError(
+                    f"Nilai tebal elemen {element_id} harus lebih besar dari nol."
+                )
+            if not (0.0 <= nu < 0.5):
+                raise ValueError(
+                    f"Poisson ratio elemen {element_id} harus berada pada rentang 0 sampai < 0.5."
+                )
+
+            D = constitutive_matrix(E, nu, analysis_mode)
+            element_matrices = quad4_element_matrices(coords, D, thickness)
+            Ke = element_matrices["ke"]
+            dof_map = element_dof_map(element_nodes, node_index)
+            Kg_element = assemble_element_global_matrix(Ke, dof_map, dof)
+
+            K[np.ix_(dof_map, dof_map)] += Ke
+
+            element_lookup[element_id] = {
+                "coords": coords,
+                "dof_map": dof_map,
+                "node_ids": element_nodes,
+            }
+            element_debug_data.append(
+                {
+                    "element_id": element_id,
+                    "node_ids": element_nodes,
+                    "coords": coords,
+                    "D": D,
+                    "dof_map": dof_map,
+                    "local_labels": element_dof_labels(element_nodes),
+                    "gauss_data": element_matrices["gauss_data"],
+                    "B_total": element_matrices["B_total"],
+                    "ke": Ke,
+                    "KG_element": Kg_element,
+                }
+            )
+
+        for _, load in loads.iterrows():
+            idx = node_index[int(load["node"])]
+            F[2 * idx] += row_value(load, "Fx", 0.0)
+            F[2 * idx + 1] += row_value(load, "Fy", 0.0)
+
+        for _, edge_load in edge_loads.iterrows():
+            element_id = int(edge_load["element"])
+            if element_id not in element_lookup:
+                raise ValueError(
+                    f"Edge load mengacu ke elemen {element_id}, tetapi elemen itu tidak ada."
+                )
+            edge = int(edge_load["edge"])
+            fe = quad4_edge_load(
+                element_lookup[element_id]["coords"],
+                edge,
+                row_value(edge_load, "qx", 0.0),
+                row_value(edge_load, "qy", 0.0),
+            )
+            dof_map = element_lookup[element_id]["dof_map"]
+            for i in range(8):
+                F[dof_map[i]] += fe[i]
+
+        prescribed_dofs = {}
+        constrained_nodes = set()
+        for _, constraint in bc.iterrows():
+            node_id = int(constraint["node"])
+            if node_id not in node_index:
+                raise ValueError(
+                    f"Boundary condition mengacu ke node {node_id}, tetapi node itu tidak ada."
+                )
+            constrained_nodes.add(node_id)
+            idx = node_index[node_id]
+
+            if int(constraint["ux"]) == 1:
+                dof_id = 2 * idx
+                ux_value = row_value(constraint, "ux_val", 0.0)
+                if dof_id in prescribed_dofs and not np.isclose(prescribed_dofs[dof_id], ux_value):
+                    raise ValueError(f"DOF ux pada node {node_id} memiliki nilai constraint ganda.")
+                prescribed_dofs[dof_id] = ux_value
+
+            if int(constraint["uy"]) == 1:
+                dof_id = 2 * idx + 1
+                uy_value = row_value(constraint, "uy_val", 0.0)
+                if dof_id in prescribed_dofs and not np.isclose(prescribed_dofs[dof_id], uy_value):
+                    raise ValueError(f"DOF uy pada node {node_id} memiliki nilai constraint ganda.")
+                prescribed_dofs[dof_id] = uy_value
+
+        U, reactions = solve_system(K, F, prescribed_dofs)
+
+        displacement_df, gauss_results_df, element_results_df = create_results(
+            nodes,
+            elements,
+            node_index,
+            coordinates,
+            analysis_mode,
+            default_E,
+            default_nu,
+            default_t,
+            concrete_fc,
+            concrete_ft,
+            U,
         )
+        gauss_results_mpa_df = convert_stress_dataframe_to_mpa(gauss_results_df)
+        element_results_mpa_df = convert_stress_dataframe_to_mpa(element_results_df)
+        gauss_results_display_df = add_counterclockwise_principal_angle_columns(
+            gauss_results_mpa_df
+        )
+        element_results_display_df = add_counterclockwise_principal_angle_columns(
+            element_results_mpa_df
+        )
+
+        reaction_rows = []
+        for _, node in nodes.iterrows():
+            node_id = int(node["id"])
+            idx = node_index[node_id]
+            reaction_rows.append(
+                {
+                    "node": node_id,
+                    "Rx": reactions[2 * idx],
+                    "Ry": reactions[2 * idx + 1],
+                }
+            )
+        reaction_df = pd.DataFrame(reaction_rows)
+        constrained_reaction_df = reaction_df[
+            reaction_df["node"].isin(sorted(constrained_nodes))
+        ].copy()
+        constrained_reaction_display_df = constrained_reaction_df.merge(
+            displacement_df[["node", "x", "y"]],
+            on="node",
+            how="left",
+        )
+        constrained_reaction_display_df["R_mag"] = np.hypot(
+            constrained_reaction_display_df["Rx"],
+            constrained_reaction_display_df["Ry"],
+        )
+        constrained_reaction_display_df = constrained_reaction_display_df[
+            ["node", "x", "y", "Rx", "Ry", "R_mag"]
+        ]
+
+        support_reaction_detail_df = build_support_reaction_detail_dataframe(
+            reactions, prescribed_dofs, node_ids
+        )
+        equilibrium_df, equilibrium_ok = build_equilibrium_dataframe(
+            F, reactions, prescribed_dofs
+        )
+        model_summary_df = build_model_summary_dataframe(
+            analysis_mode,
+            nodes,
+            elements,
+            loads,
+            bc,
+            edge_loads,
+            default_E,
+            default_nu,
+            default_t,
+            concrete_fc,
+            concrete_ft,
+            dof,
+            prescribed_dofs,
+        )
+        executive_summary_df = build_executive_summary_dataframe(
+            displacement_df,
+            element_results_display_df,
+            gauss_results_display_df,
+            support_reaction_detail_df,
+        )
+        nodal_hotspots_df = build_nodal_hotspots_dataframe(displacement_df)
+        reaction_hotspots_df = build_support_hotspots_dataframe(
+            constrained_reaction_df,
+            displacement_df,
+        )
+        element_vm_hotspots_df = build_element_hotspot_dataframe(
+            element_results_display_df,
+            "von_mises",
+        )
+        element_yield_hotspots_df = build_element_hotspot_dataframe(
+            element_results_display_df,
+            "yield_function",
+        )
+        gauss_vm_hotspots_df = build_gauss_hotspot_dataframe(
+            gauss_results_display_df,
+            "von_mises",
+        )
+        gauss_yield_hotspots_df = build_gauss_hotspot_dataframe(
+            gauss_results_display_df,
+            "yield_function",
+        )
+
+        critical_displacement_row = select_extreme_row(displacement_df, "U_mag")
+        critical_element_row = select_extreme_row(
+            element_results_display_df, "von_mises"
+        )
+        critical_gauss_row = select_extreme_row(gauss_results_display_df, "von_mises")
+        critical_node_id = (
+            int(critical_displacement_row["node"])
+            if critical_displacement_row is not None
+            else None
+        )
+        critical_element_id = (
+            int(critical_element_row["element"])
+            if critical_element_row is not None
+            else None
+        )
+
+        max_disp = displacement_df["U_mag"].max() if not displacement_df.empty else 0.0
+        max_vm_gauss = (
+            gauss_results_mpa_df["von_mises"].max()
+            if not gauss_results_mpa_df.empty
+            else 0.0
+        )
+        yield_point_count = (
+            int((gauss_results_display_df["yield_state"] == "Yield").sum())
+            if "yield_state" in gauss_results_display_df.columns
+            else 0
+        )
+
+        export_notes_rows = [
+            {
+                "Catatan": (
+                    "Semua kolom tegangan pada workbook hasil diekspor dalam MPa. "
+                    "Displacement, beban, reaksi, dan matriks kekakuan tetap mengikuti satuan model input."
+                )
+            },
+            {
+                "Catatan": (
+                    "Hotspot elemen memakai hasil berbasis `B_total`, sedangkan hotspot titik Gauss "
+                    "lebih konservatif karena dievaluasi per titik integrasi."
+                )
+            },
+        ]
+        result_sheet_specs = [
+            {"sheet_name": "ExecutiveSummary", "dataframe": executive_summary_df},
+            {"sheet_name": "ModelInfo", "dataframe": model_summary_df},
+            {"sheet_name": "Equilibrium", "dataframe": equilibrium_df},
+            {"sheet_name": "Hotspot_Nodes", "dataframe": nodal_hotspots_df},
+            {"sheet_name": "Hotspot_Reactions", "dataframe": reaction_hotspots_df},
+            {"sheet_name": "Hotspot_Elem_VM", "dataframe": element_vm_hotspots_df},
+            {"sheet_name": "Hotspot_Elem_Yield", "dataframe": element_yield_hotspots_df},
+            {"sheet_name": "Hotspot_GP_VM", "dataframe": gauss_vm_hotspots_df},
+            {"sheet_name": "Hotspot_GP_Yield", "dataframe": gauss_yield_hotspots_df},
+            {"sheet_name": "Displacement_Nodes", "dataframe": displacement_df},
+            {
+                "sheet_name": "Support_Reactions",
+                "dataframe": constrained_reaction_display_df,
+            },
+            {
+                "sheet_name": "Support_Reaction_DOF",
+                "dataframe": support_reaction_detail_df,
+            },
+            {"sheet_name": "Element_Results", "dataframe": element_results_display_df},
+            {"sheet_name": "Gauss_Results", "dataframe": gauss_results_display_df},
+            {
+                "sheet_name": "Vector_P",
+                "dataframe": vector_to_dataframe(F, global_labels, "P"),
+            },
+            {
+                "sheet_name": "Vector_d",
+                "dataframe": vector_to_dataframe(U, global_labels, "d"),
+            },
+            {
+                "sheet_name": "Vector_R",
+                "dataframe": vector_to_dataframe(reactions, global_labels, "R"),
+            },
+            {"sheet_name": "Input_Nodes", "dataframe": nodes},
+            {"sheet_name": "Input_Elements", "dataframe": elements},
+            {"sheet_name": "Input_Loads", "dataframe": loads},
+            {"sheet_name": "Input_BC", "dataframe": bc},
+            {"sheet_name": "Input_EdgeLoads", "dataframe": edge_loads},
+        ]
+        if K.size <= MAX_EXPORT_MATRIX_CELLS:
+            result_sheet_specs.append(
+                {
+                    "sheet_name": "Global_KG",
+                    "dataframe": matrix_to_dataframe(
+                        K,
+                        global_labels,
+                        global_labels,
+                    ),
+                    "include_index": True,
+                }
+            )
+        else:
+            export_notes_rows.append(
+                {
+                    "Catatan": (
+                        f"Sheet `Global_KG` tidak diekspor karena ukurannya {K.shape[0]}x{K.shape[1]} "
+                        f"({K.size} sel), melebihi batas otomatis {MAX_EXPORT_MATRIX_CELLS} sel."
+                    )
+                }
+            )
+        if critical_gauss_row is not None:
+            export_notes_rows.append(
+                {
+                    "Catatan": (
+                        "Von Mises maksimum titik Gauss berada pada "
+                        f"elemen {int(critical_gauss_row['element'])}, GP {int(critical_gauss_row['gauss_point'])}."
+                    )
+                }
+            )
+        result_sheet_specs.append(
+            {"sheet_name": "ExportNotes", "dataframe": pd.DataFrame(export_notes_rows)}
+        )
+        results_workbook_bytes = build_results_workbook(result_sheet_specs)
+
+        auto_scale = auto_scale_factor(coordinates, U)
+
+        st.success("Analisis selesai.")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Jumlah node", len(nodes))
+        col2.metric("Jumlah elemen", len(elements))
+        col3.metric("DOF total", dof)
+
+        col4, col5, col6 = st.columns(3)
+        col4.metric("Displacement maksimum", f"{max_disp:.6g}")
+        col5.metric("Von Mises maksimum GP (MPa)", f"{max_vm_gauss:.6g}")
+        col6.metric(
+            "Titik Gauss status Yield",
+            f"{yield_point_count}/{len(gauss_results_display_df)}",
+        )
+
+        if equilibrium_ok:
+            st.success("Cek keseimbangan global gaya: OK.")
+        else:
+            st.warning(
+                "Cek keseimbangan global gaya menunjukkan residual yang perlu ditinjau."
+            )
+
+        if yield_point_count > 0:
+            st.warning(
+                f"Terdapat {yield_point_count} titik Gauss dengan status `Yield` menurut evaluasi Drucker-Prager."
+            )
+        else:
+            st.info("Semua titik Gauss masih berstatus `Elastic` pada evaluasi Drucker-Prager.")
+
+        st.subheader("Ringkasan Eksekutif")
+        summary_col1, summary_col2 = st.columns((1.45, 1.0))
+        with summary_col1:
+            show_dataframe(executive_summary_df.round(6), use_container_width=True)
+        with summary_col2:
+            st.write("Ringkasan Model")
+            show_dataframe(model_summary_df, use_container_width=True)
+            st.write("Cek Keseimbangan Gaya")
+            show_dataframe(equilibrium_df.round(9), use_container_width=True)
+            st.download_button(
+                "Unduh workbook hasil analisis",
+                data=results_workbook_bytes,
+                file_name=RESULTS_FILENAME,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+            st.caption(
+                "Workbook ini memuat ringkasan, hotspot, input model, hasil utama, vektor sistem, "
+                "dan matriks global bila ukurannya masih aman untuk diekspor."
+            )
+
+        st.subheader("Hotspot Kritis")
+        hotspot_tab1, hotspot_tab2, hotspot_tab3 = st.tabs(
+            ["Node & Reaksi", "Elemen", "Titik Gauss"]
+        )
+        with hotspot_tab1:
+            st.write("Node dengan displacement terbesar")
+            show_dataframe(nodal_hotspots_df.round(6), use_container_width=True)
+            st.write("Tumpuan dengan resultan reaksi terbesar")
+            show_dataframe(reaction_hotspots_df.round(6), use_container_width=True)
+        with hotspot_tab2:
+            st.write("Elemen paling kritis berdasarkan Von Mises")
+            show_dataframe(element_vm_hotspots_df.round(6), use_container_width=True)
+            st.write("Elemen paling kritis berdasarkan yield function")
+            show_dataframe(
+                element_yield_hotspots_df.round(6), use_container_width=True
+            )
+        with hotspot_tab3:
+            st.write("Titik Gauss paling kritis berdasarkan Von Mises")
+            show_dataframe(gauss_vm_hotspots_df.round(6), use_container_width=True)
+            st.write("Titik Gauss paling kritis berdasarkan yield function")
+            show_dataframe(gauss_yield_hotspots_df.round(6), use_container_width=True)
+
+        deformation_scale = st.number_input(
+            "Skala deformasi plot",
+            min_value=0.0,
+            value=float(round(auto_scale, 3)),
+            format="%.6g",
+        )
+
+        figure = plot_mesh(
+            nodes,
+            elements,
+            node_index,
+            coordinates,
+            U,
+            deformation_scale,
+            constrained_nodes,
+            critical_node_id=critical_node_id,
+            critical_element_id=critical_element_id,
+        )
+        st.caption(
+            "Mesh overview menandai node dengan displacement maksimum dan elemen dengan Von Mises elemen tertinggi."
+        )
+        st.pyplot(figure)
+
+        st.subheader("Animasi Hasil")
+        animation_mode = st.selectbox(
+            "Jenis animasi",
+            [
+                "Mesh deformasi",
+                "Kontur Uy",
+                "Kontur Ux",
+                "Kontur tegangan",
+            ],
+            index=0,
+        )
+        animation_col1, animation_col2 = st.columns(2)
+        animation_frames = animation_col1.slider(
+            "Jumlah frame animasi",
+            min_value=12,
+            max_value=48,
+            value=24,
+            step=6,
+        )
+        animation_interval = animation_col2.slider(
+            "Kecepatan animasi per frame (ms)",
+            min_value=40,
+            max_value=240,
+            value=90,
+            step=10,
+        )
+        selected_animation_stress_label = None
+        if animation_mode == "Kontur tegangan":
+            selected_animation_stress_label = st.selectbox(
+                "Komponen tegangan animasi",
+                list(STRESS_CONTOUR_OPTIONS.keys()),
+                index=0,
+            )
+        st.caption(
+            "Animasi ini adalah visualisasi hasil analisis statik yang bergerak dari kondisi awal ke deformasi maksimum lalu kembali lagi. "
+            "Ini bukan analisis dinamik atau time history."
+        )
+        animation_gif = None
+        try:
+            with st.spinner("Membuat animasi..."):
+                if animation_mode == "Mesh deformasi":
+                    animation_gif = create_deformation_animation_gif(
+                        elements,
+                        node_index,
+                        coordinates,
+                        U,
+                        deformation_scale,
+                        constrained_nodes,
+                        animation_frames,
+                        animation_interval,
+                    )
+                elif animation_mode == "Kontur Uy":
+                    animation_gif = create_scalar_contour_animation_gif(
+                        elements,
+                        node_index,
+                        coordinates,
+                        U,
+                        deformation_scale,
+                        constrained_nodes,
+                        displacement_values_from_vector(U, "Uy"),
+                        "Uy",
+                        "satuan model",
+                        DISPLACEMENT_CONTOUR_CMAP,
+                        animation_frames,
+                        animation_interval,
+                        "Animasi Kontur Deformasi",
+                    )
+                elif animation_mode == "Kontur Ux":
+                    animation_gif = create_scalar_contour_animation_gif(
+                        elements,
+                        node_index,
+                        coordinates,
+                        U,
+                        deformation_scale,
+                        constrained_nodes,
+                        displacement_values_from_vector(U, "Ux"),
+                        "Ux",
+                        "satuan model",
+                        DISPLACEMENT_CONTOUR_CMAP,
+                        animation_frames,
+                        animation_interval,
+                        "Animasi Kontur Deformasi",
+                    )
+                elif selected_animation_stress_label is not None:
+                    animation_stress_column = STRESS_CONTOUR_OPTIONS[
+                        selected_animation_stress_label
+                    ]
+                    animation_gif = create_scalar_contour_animation_gif(
+                        elements,
+                        node_index,
+                        coordinates,
+                        U,
+                        deformation_scale,
+                        constrained_nodes,
+                        average_element_result_to_nodes(
+                            elements,
+                            node_index,
+                            element_results_mpa_df,
+                            animation_stress_column,
+                        ),
+                        selected_animation_stress_label,
+                        "MPa",
+                        STRESS_CONTOUR_CMAP,
+                        animation_frames,
+                        animation_interval,
+                        "Animasi Kontur Tegangan",
+                    )
+        except Exception as exc:
+            st.error(f"Animasi gagal dibuat: {exc}")
+
+        if animation_gif is not None:
+            render_gif(animation_gif)
+
+        st.subheader("Kontur Tegangan")
+        contour_col1, contour_col2 = st.columns((2, 2))
+        selected_stress_label = contour_col1.selectbox(
+            "Komponen tegangan",
+            list(STRESS_CONTOUR_OPTIONS.keys()),
+            index=0,
+        )
+        contour_geometry = contour_col2.radio(
+            "Geometri kontur",
+            ["Mesh asli", "Bentuk terdeformasi"],
+            index=0,
+            horizontal=True,
+        )
+        stress_figure = plot_stress_contour(
+            elements,
+            node_index,
+            coordinates,
+            U,
+            deformation_scale,
+            constrained_nodes,
+            element_results_mpa_df,
+            STRESS_CONTOUR_OPTIONS[selected_stress_label],
+            contour_geometry == "Bentuk terdeformasi",
+        )
+        if stress_figure is not None:
+            st.caption(
+                "Gradasi warna memakai kuning untuk tegangan terendah dan merah untuk tegangan tertinggi. "
+                "Nilai kontur diperoleh dari hasil tegangan elemen yang diinterpolasi ke node."
+            )
+            st.pyplot(stress_figure)
+
+        st.subheader("Kontur Deformasi")
+        displacement_contour_geometry = st.radio(
+            "Geometri kontur deformasi",
+            ["Mesh asli", "Bentuk terdeformasi"],
+            index=1,
+            horizontal=True,
+        )
+        uy_figure = plot_displacement_contour(
+            elements,
+            node_index,
+            coordinates,
+            U,
+            deformation_scale,
+            constrained_nodes,
+            DISPLACEMENT_CONTOUR_OPTIONS["Uy"],
+            displacement_contour_geometry == "Bentuk terdeformasi",
+        )
+        ux_figure = plot_displacement_contour(
+            elements,
+            node_index,
+            coordinates,
+            U,
+            deformation_scale,
+            constrained_nodes,
+            DISPLACEMENT_CONTOUR_OPTIONS["Ux"],
+            displacement_contour_geometry == "Bentuk terdeformasi",
+        )
+        st.caption(
+            "Kontur deformasi ditampilkan satu per satu agar area gambar lebih besar. "
+            "Nilai terendah berada pada gradasi biru dan nilai maksimum ditampilkan merah."
+        )
+        if uy_figure is not None:
+            st.pyplot(uy_figure)
+        if ux_figure is not None:
+            st.pyplot(ux_figure)
+
+        st.subheader("Displacement Nodal")
+        show_dataframe(displacement_df.round(6), use_container_width=True)
+
+        st.subheader("Reaksi Tumpuan")
+        show_dataframe(
+            constrained_reaction_display_df.round(6), use_container_width=True
+        )
+
+        st.subheader("Output Elemen Lengkap")
+        st.caption(
+            "Hasil elemen dihitung langsung dengan `B_total = [B]1 + [B]2 + [B]3 + [B]4` "
+            "agar konsisten dengan workbook Excel. Kolom strain tetap tak berdimensi, "
+            "sedangkan semua kolom tegangan pada tabel ini ditampilkan dalam MPa. "
+            "Kolom `principal_angle_*_ccw_deg` memakai konvensi positif berlawanan arah jarum jam. "
+            "Kolom `principal_angle_plot_direction` mengikuti aturan: sudut `+` = berlawanan arah jarum jam, "
+            "sudut `-` = searah jarum jam. Kolom `principal_angle_perpendicular_deg` adalah arah tegak lurus terhadap `sigma1`."
+        )
+        show_dataframe(element_results_display_df.round(6), use_container_width=True)
+
+        principal_sketch_figure = plot_principal_stress_sketches(
+            element_results_mpa_df
+        )
+        if principal_sketch_figure is not None:
+            st.subheader("Sketsa Tegangan Utama per Elemen")
+            st.caption(
+                "Sketsa ini memakai nilai `principal_angle_1_deg` langsung sebagai arah `sigma1`. "
+                "Jika nilainya positif, arah digambar berlawanan arah jarum jam (CCW) dari sumbu `+x`, "
+                "dan jika negatif digambar searah jarum jam. Jika `sigma1 > 0`, sudut retak dihitung dari arah tegak lurus `sigma1`; "
+                "jika `sigma1 < 0`, ditampilkan bahwa retak tarik primer tidak terjadi."
+            )
+            st.pyplot(principal_sketch_figure)
+
+        mohr_figure = plot_mohr_circles(element_results_mpa_df)
+        if mohr_figure is not None:
+            st.subheader("Lingkaran Mohr per Elemen")
+            st.caption(
+                "Plot ini memakai tegangan elemen hasil `B_total` (`sx`, `sy`, `txy`) "
+                "dalam MPa, "
+                "sehingga setiap elemen direpresentasikan oleh satu lingkaran Mohr."
+            )
+            st.pyplot(mohr_figure)
+
+        with st.expander("Lingkaran Mohr per Titik Gauss", expanded=False):
+            st.caption(
+                "Setiap elemen ditampilkan dengan 4 lingkaran Mohr sesuai 4 titik Gauss. "
+                "Ini lebih detail dibanding hasil elemen berbasis `B_total`."
+            )
+            for element_id in sorted(gauss_results_mpa_df["element"].unique()):
+                with st.expander(f"Elemen {int(element_id)}", expanded=False):
+                    gauss_mohr_figure = plot_mohr_circles_for_element_gauss(
+                        gauss_results_mpa_df, int(element_id)
+                    )
+                    if gauss_mohr_figure is not None:
+                        st.pyplot(gauss_mohr_figure)
+
+        with st.expander("Sketsa Tegangan Utama per Titik Gauss", expanded=False):
+            st.caption(
+                "Sketsa titik Gauss juga memakai `principal_angle_1_deg` langsung untuk arah `sigma1`, "
+                "dan arah tegak lurus dibentuk otomatis 90 derajat terhadap `sigma1`. "
+                "Aturan retak tarik primer mengikuti tanda `sigma1`."
+            )
+            for element_id in sorted(gauss_results_mpa_df["element"].unique()):
+                with st.expander(f"Elemen {int(element_id)}", expanded=False):
+                    gauss_principal_figure = (
+                        plot_principal_stress_sketches_for_element_gauss(
+                            gauss_results_mpa_df, int(element_id)
+                        )
+                    )
+                    if gauss_principal_figure is not None:
+                        st.pyplot(gauss_principal_figure)
+
+        with st.expander("Hasil Regangan dan Tegangan di Titik Gauss", expanded=False):
+            st.caption(
+                "Tabel ini memuat strain, stress, principal stress/angle, shear extreme, "
+                "Von Mises, Drucker-Prager, dan fungsi luluh pada setiap titik Gauss. "
+                "Semua kolom tegangan pada tabel ini sudah dalam MPa. "
+                "Kolom `principal_angle_*_ccw_deg` memakai konvensi positif berlawanan arah jarum jam. "
+                "Kolom `principal_angle_plot_direction` mengikuti aturan arah plot `sigma1`, "
+                "dan `principal_angle_perpendicular_deg` adalah arah tegak lurus terhadap `sigma1`."
+            )
+            show_dataframe(gauss_results_display_df.round(6), use_container_width=True)
+
+        with st.expander("Gaya Nodal Total", expanded=False):
+            total_force_df = pd.DataFrame(
+                [{"Sum_Fx": F[0::2].sum(), "Sum_Fy": F[1::2].sum()}]
+            )
+            show_dataframe(total_force_df.round(6), use_container_width=True)
+
+        with st.expander("Matriks Global dan Vektor Sistem", expanded=False):
+            st.write("Matrik Beban Nodal `{P}`")
+            show_dataframe(
+                vector_to_dataframe(F, global_labels, "P").round(6),
+                use_container_width=True,
+            )
+
+            st.write("Matrik Nodal Displacement `{d}`")
+            show_dataframe(
+                vector_to_dataframe(U, global_labels, "d").round(6),
+                use_container_width=True,
+            )
+
+            st.write("Matrik Reaksi Perletakan `{R}`")
+            show_dataframe(
+                vector_to_dataframe(reactions, global_labels, "R").round(6),
+                use_container_width=True,
+            )
+
+            st.write("Matrik Kekakuan Global Total `[KG]`")
+            show_dataframe(
+                matrix_to_dataframe(K, global_labels, global_labels).round(6),
+                keep_left_column=True,
+                use_container_width=True,
+                height=500,
+            )
+
+        with st.expander("Matriks Detail per Elemen", expanded=False):
+            st.caption(
+                "`Matrik Total Koefisien [B]` ditampilkan sebagai penjumlahan "
+                "`[B]1 + [B]2 + [B]3 + [B]4` agar sama dengan workbook Excel. "
+                "`Matrik Konstitutif [D]` ditampilkan dalam MPa, sedangkan matriks kekakuan "
+                "tetap mengikuti satuan sistem input."
+            )
+            for element_data in element_debug_data:
+                element_id = element_data["element_id"]
+                local_labels = element_data["local_labels"]
+                node_list = ", ".join(str(node_id) for node_id in element_data["node_ids"])
+
+                with st.expander(
+                    f"Elemen {element_id} | node [{node_list}]", expanded=False
+                ):
+                    st.write("Matrik Konstitutif `[D]` (MPa)")
+                    show_dataframe(
+                        matrix_to_dataframe(
+                            convert_stress_matrix_to_mpa(element_data["D"]),
+                            ["sx", "sy", "txy"],
+                            ["ex", "ey", "gxy"],
+                        ).round(6),
+                        keep_left_column=True,
+                        use_container_width=True,
+                    )
+
+                    for gauss_data in element_data["gauss_data"]:
+                        gauss_index = gauss_data["gauss_point"]
+                        st.write(
+                            f"Titik Gauss / node integrasi {gauss_index} "
+                            f"(xi={gauss_data['xi']:.4f}, eta={gauss_data['eta']:.4f})"
+                        )
+                        st.write("Matrik Koefisien `[B]`")
+                        show_dataframe(
+                            matrix_to_dataframe(
+                                gauss_data["B"],
+                                ["ex", "ey", "gxy"],
+                                local_labels,
+                            ).round(6),
+                            keep_left_column=True,
+                            use_container_width=True,
+                        )
+                        st.write("Hasil `[B]^T[D][B]`")
+                        show_dataframe(
+                            matrix_to_dataframe(
+                                gauss_data["BTDB"],
+                                local_labels,
+                                local_labels,
+                            ).round(6),
+                            keep_left_column=True,
+                            use_container_width=True,
+                        )
+
+                    st.write("Matrik Total Koefisien `[B]`")
+                    show_dataframe(
+                        matrix_to_dataframe(
+                            element_data["B_total"],
+                            b_total_row_labels(),
+                            local_labels,
+                        ).round(6),
+                        keep_left_column=True,
+                        use_container_width=True,
+                    )
+
+                    st.write("Matrik Kekakuan Lokal Elemen `[ke]`")
+                    show_dataframe(
+                        matrix_to_dataframe(
+                            element_data["ke"],
+                            local_labels,
+                            local_labels,
+                        ).round(6),
+                        keep_left_column=True,
+                        use_container_width=True,
+                    )
+
+                    st.write("Matrik Kekakuan Global Elemen `[KG]`")
+                    show_dataframe(
+                        matrix_to_dataframe(
+                            element_data["KG_element"],
+                            global_labels,
+                            global_labels,
+                        ).round(6),
+                        keep_left_column=True,
+                        use_container_width=True,
+                        height=400,
+                    )
+
+    except Exception as exc:
+        st.error(str(exc))
