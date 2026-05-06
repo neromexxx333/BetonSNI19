@@ -11,8 +11,10 @@
 # ==========================================================
 
 import streamlit as st
+import streamlit.components.v1 as components
 import math
 import base64
+from io import BytesIO
 from pathlib import Path
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle, Circle
@@ -34,6 +36,291 @@ def image_to_base64(image_path):
         return None
     with image_file_path.open("rb") as image_file:
         return base64.b64encode(image_file.read()).decode("utf-8")
+
+def figure_to_png_bytes(fig, dpi=320):
+    buffer = BytesIO()
+    fig.savefig(
+        buffer,
+        format="png",
+        dpi=dpi,
+        bbox_inches="tight",
+        pad_inches=0.15,
+        facecolor="white"
+    )
+    buffer.seek(0)
+    return buffer.getvalue()
+
+def render_interactive_png(png_bytes, key_prefix, viewer_height=420):
+    image_base64 = base64.b64encode(png_bytes).decode("utf-8")
+    viewer_id = f"viewer_{key_prefix}"
+    image_id = f"image_{key_prefix}"
+    wrapper_height = viewer_height + 32
+
+    components.html(
+        f"""
+        <div style="width:100%; margin:0;">
+            <div
+                id="{viewer_id}"
+                style="
+                    position:relative;
+                    width:100%;
+                    height:{viewer_height}px;
+                    overflow:hidden;
+                    border:1px solid #cfd8dc;
+                    border-radius:10px;
+                    background:#ffffff;
+                    touch-action:none;
+                    cursor:grab;
+                "
+            >
+                <img
+                    id="{image_id}"
+                    src="data:image/png;base64,{image_base64}"
+                    alt="Gambar hasil desain"
+                    draggable="false"
+                    style="
+                        position:absolute;
+                        left:50%;
+                        top:50%;
+                        max-width:none;
+                        user-select:none;
+                        -webkit-user-drag:none;
+                        transform-origin:center center;
+                    "
+                >
+            </div>
+            <div style="
+                font-size:12px;
+                color:#5f6c72;
+                text-align:center;
+                padding-top:6px;
+            ">
+                Zoom: roda mouse / pinch. Geser: drag. Reset: double click atau pinch out.
+            </div>
+        </div>
+        <script>
+            (function() {{
+                const viewer = document.getElementById("{viewer_id}");
+                const img = document.getElementById("{image_id}");
+
+                let scale = 1;
+                let minScale = 1;
+                let maxScale = 8;
+                let translateX = 0;
+                let translateY = 0;
+                let isDragging = false;
+                let dragStartX = 0;
+                let dragStartY = 0;
+                let pinchStartDistance = 0;
+                let pinchStartScale = 1;
+                let pinchStartTranslateX = 0;
+                let pinchStartTranslateY = 0;
+                let naturalWidth = 0;
+                let naturalHeight = 0;
+
+                function clamp(value, min, max) {{
+                    return Math.min(Math.max(value, min), max);
+                }}
+
+                function applyTransform() {{
+                    img.style.transform =
+                        `translate(-50%, -50%) translate(${{translateX}}px, ${{translateY}}px) scale(${{scale}})`;
+                }}
+
+                function constrainPan() {{
+                    if (!naturalWidth || !naturalHeight) return;
+
+                    const scaledWidth = naturalWidth * scale;
+                    const scaledHeight = naturalHeight * scale;
+                    const maxX = Math.max(0, (scaledWidth - viewer.clientWidth) / 2);
+                    const maxY = Math.max(0, (scaledHeight - viewer.clientHeight) / 2);
+
+                    translateX = clamp(translateX, -maxX, maxX);
+                    translateY = clamp(translateY, -maxY, maxY);
+                }}
+
+                function fitToViewer(resetView) {{
+                    if (!img.naturalWidth || !img.naturalHeight) return;
+
+                    naturalWidth = img.naturalWidth;
+                    naturalHeight = img.naturalHeight;
+
+                    const fitScale = Math.min(
+                        (viewer.clientWidth - 16) / naturalWidth,
+                        (viewer.clientHeight - 16) / naturalHeight
+                    );
+
+                    minScale = fitScale;
+                    maxScale = fitScale * 8;
+
+                    if (resetView || scale < minScale) {{
+                        scale = minScale;
+                        translateX = 0;
+                        translateY = 0;
+                    }} else if (scale > maxScale) {{
+                        scale = maxScale;
+                    }}
+
+                    constrainPan();
+                    applyTransform();
+                }}
+
+                function zoomAt(clientX, clientY, factor) {{
+                    const prevScale = scale;
+                    const nextScale = clamp(prevScale * factor, minScale, maxScale);
+
+                    if (Math.abs(nextScale - prevScale) < 1e-9) return;
+
+                    const rect = viewer.getBoundingClientRect();
+                    const localX = clientX - rect.left - viewer.clientWidth / 2 - translateX;
+                    const localY = clientY - rect.top - viewer.clientHeight / 2 - translateY;
+                    const ratio = nextScale / prevScale;
+
+                    translateX -= localX * (ratio - 1);
+                    translateY -= localY * (ratio - 1);
+                    scale = nextScale;
+
+                    constrainPan();
+                    applyTransform();
+                }}
+
+                function touchDistance(t1, t2) {{
+                    const dx = t2.clientX - t1.clientX;
+                    const dy = t2.clientY - t1.clientY;
+                    return Math.sqrt(dx * dx + dy * dy);
+                }}
+
+                function touchMidpoint(t1, t2) {{
+                    return {{
+                        x: (t1.clientX + t2.clientX) / 2,
+                        y: (t1.clientY + t2.clientY) / 2
+                    }};
+                }}
+
+                img.addEventListener("load", function() {{
+                    fitToViewer(true);
+                }});
+
+                if (img.complete) {{
+                    fitToViewer(true);
+                }}
+
+                viewer.addEventListener("wheel", function(event) {{
+                    event.preventDefault();
+                    const factor = event.deltaY < 0 ? 1.12 : (1 / 1.12);
+                    zoomAt(event.clientX, event.clientY, factor);
+                }}, {{ passive: false }});
+
+                viewer.addEventListener("mousedown", function(event) {{
+                    isDragging = true;
+                    dragStartX = event.clientX - translateX;
+                    dragStartY = event.clientY - translateY;
+                    viewer.style.cursor = "grabbing";
+                }});
+
+                window.addEventListener("mousemove", function(event) {{
+                    if (!isDragging) return;
+                    translateX = event.clientX - dragStartX;
+                    translateY = event.clientY - dragStartY;
+                    constrainPan();
+                    applyTransform();
+                }});
+
+                window.addEventListener("mouseup", function() {{
+                    isDragging = false;
+                    viewer.style.cursor = "grab";
+                }});
+
+                viewer.addEventListener("dblclick", function() {{
+                    scale = minScale;
+                    translateX = 0;
+                    translateY = 0;
+                    applyTransform();
+                }});
+
+                viewer.addEventListener("touchstart", function(event) {{
+                    if (event.touches.length === 1) {{
+                        const touch = event.touches[0];
+                        isDragging = true;
+                        dragStartX = touch.clientX - translateX;
+                        dragStartY = touch.clientY - translateY;
+                    }} else if (event.touches.length === 2) {{
+                        isDragging = false;
+                        pinchStartDistance = touchDistance(event.touches[0], event.touches[1]);
+                        pinchStartScale = scale;
+                        pinchStartTranslateX = translateX;
+                        pinchStartTranslateY = translateY;
+                    }}
+                }}, {{ passive: false }});
+
+                viewer.addEventListener("touchmove", function(event) {{
+                    event.preventDefault();
+
+                    if (event.touches.length === 1 && isDragging) {{
+                        const touch = event.touches[0];
+                        translateX = touch.clientX - dragStartX;
+                        translateY = touch.clientY - dragStartY;
+                        constrainPan();
+                        applyTransform();
+                    }} else if (event.touches.length === 2) {{
+                        const currentDistance = touchDistance(event.touches[0], event.touches[1]);
+                        if (pinchStartDistance <= 0) return;
+
+                        const midpoint = touchMidpoint(event.touches[0], event.touches[1]);
+                        const rect = viewer.getBoundingClientRect();
+                        const nextScale = clamp(
+                            pinchStartScale * (currentDistance / pinchStartDistance),
+                            minScale,
+                            maxScale
+                        );
+                        const ratio = nextScale / pinchStartScale;
+                        const localX =
+                            midpoint.x - rect.left - viewer.clientWidth / 2 - pinchStartTranslateX;
+                        const localY =
+                            midpoint.y - rect.top - viewer.clientHeight / 2 - pinchStartTranslateY;
+
+                        scale = nextScale;
+                        translateX = pinchStartTranslateX - localX * (ratio - 1);
+                        translateY = pinchStartTranslateY - localY * (ratio - 1);
+                        constrainPan();
+                        applyTransform();
+                    }}
+                }}, {{ passive: false }});
+
+                viewer.addEventListener("touchend", function(event) {{
+                    if (event.touches.length === 0) {{
+                        isDragging = false;
+                    }} else if (event.touches.length === 1) {{
+                        const touch = event.touches[0];
+                        isDragging = true;
+                        dragStartX = touch.clientX - translateX;
+                        dragStartY = touch.clientY - translateY;
+                    }}
+                }});
+
+                window.addEventListener("resize", function() {{
+                    fitToViewer(false);
+                }});
+            }})();
+        </script>
+        """,
+        height=wrapper_height,
+        scrolling=False
+    )
+
+def render_figure_panel(fig, file_name, key_prefix, viewer_height=420):
+    hd_png = figure_to_png_bytes(fig, dpi=320)
+    render_interactive_png(hd_png, key_prefix, viewer_height=viewer_height)
+    st.download_button(
+        "Simpan PNG HD 320 DPI",
+        data=hd_png,
+        file_name=file_name,
+        mime="image/png",
+        key=f"download_{key_prefix}",
+        use_container_width=True
+    )
+
+    plt.close(fig)
 
 
 logo_ulm_base64 = image_to_base64("Logo_ULM.png")
@@ -1010,9 +1297,6 @@ def draw_shear_torsion_longitudinal_detail_figure(
     ax.text(Ln / 2.0, y0 + depth + 0.45,
             "DETAIL PENULANGAN GESER DAN TORSI - TAMPAK MEMANJANG",
             ha="center", va="bottom", fontsize=11, fontweight="bold")
-    ax.text(Ln / 2.0, y0 + depth + 0.29,
-            "Garis oranye mengikuti elevasi distribusi batang pada potongan",
-            ha="center", va="bottom", fontsize=8.2, color=torsion_color)
 
     band_y = y0 + depth + 0.10
     band_h = 0.18
@@ -1805,8 +2089,12 @@ with st.expander("HITUNGAN LENGKAP TUMPUAN KIRI"):
         st.markdown(report_markdown(L, Ln, bw, h, cover, stirrup, db, fc, fy))
     with exp_right:
         st.write("Potongan Penulangan")
-        st.pyplot(draw_section_figure(L, bw, h, cover, stirrup, db),
-                  width="stretch")
+        render_figure_panel(
+            draw_section_figure(L, bw, h, cover, stirrup, db),
+            "potongan_penulangan_tumpuan_kiri_320dpi.png",
+            "left_flexure_detail",
+            viewer_height=460
+        )
 
 with st.expander("HITUNGAN LENGKAP LAPANGAN"):
     exp_left, exp_right = st.columns([2.2, 1.0])
@@ -1814,8 +2102,12 @@ with st.expander("HITUNGAN LENGKAP LAPANGAN"):
         st.markdown(report_markdown(M, Ln, bw, h, cover, stirrup, db, fc, fy))
     with exp_right:
         st.write("Potongan Penulangan")
-        st.pyplot(draw_section_figure(M, bw, h, cover, stirrup, db),
-                  width="stretch")
+        render_figure_panel(
+            draw_section_figure(M, bw, h, cover, stirrup, db),
+            "potongan_penulangan_lapangan_320dpi.png",
+            "mid_flexure_detail",
+            viewer_height=460
+        )
 
 with st.expander("HITUNGAN LENGKAP TUMPUAN KANAN"):
     exp_left, exp_right = st.columns([2.2, 1.0])
@@ -1823,8 +2115,12 @@ with st.expander("HITUNGAN LENGKAP TUMPUAN KANAN"):
         st.markdown(report_markdown(R, Ln, bw, h, cover, stirrup, db, fc, fy))
     with exp_right:
         st.write("Potongan Penulangan")
-        st.pyplot(draw_section_figure(R, bw, h, cover, stirrup, db),
-                  width="stretch")
+        render_figure_panel(
+            draw_section_figure(R, bw, h, cover, stirrup, db),
+            "potongan_penulangan_tumpuan_kanan_320dpi.png",
+            "right_flexure_detail",
+            viewer_height=460
+        )
 
 # ==========================================================
 # DETAIL BALOK
@@ -1982,7 +2278,12 @@ ax.set_xlim(-350,Ln+350)
 ax.set_ylim(2.9,6.15)
 ax.axis("off")
 
-st.pyplot(fig)
+render_figure_panel(
+    fig,
+    "detail_penulangan_balok_320dpi.png",
+    "beam_detail",
+    viewer_height=460
+)
 
 # ==========================================================
 # CROSS SECTION
@@ -1994,18 +2295,30 @@ col_left, col_mid, col_right = st.columns(3)
 
 with col_left:
     st.write("Tumpuan Kiri")
-    st.pyplot(draw_section_figure(L, bw, h, cover, stirrup, db),
-              width="stretch")
+    render_figure_panel(
+        draw_section_figure(L, bw, h, cover, stirrup, db),
+        "potongan_tumpuan_kiri_320dpi.png",
+        "left_flexure_section",
+        viewer_height=460
+    )
 
 with col_mid:
     st.write("Lapangan")
-    st.pyplot(draw_section_figure(M, bw, h, cover, stirrup, db),
-              width="stretch")
+    render_figure_panel(
+        draw_section_figure(M, bw, h, cover, stirrup, db),
+        "potongan_lapangan_320dpi.png",
+        "mid_flexure_section",
+        viewer_height=460
+    )
 
 with col_right:
     st.write("Tumpuan Kanan")
-    st.pyplot(draw_section_figure(R, bw, h, cover, stirrup, db),
-              width="stretch")
+    render_figure_panel(
+        draw_section_figure(R, bw, h, cover, stirrup, db),
+        "potongan_tumpuan_kanan_320dpi.png",
+        "right_flexure_section",
+        viewer_height=460
+    )
 
 # ==========================================================
 # SHEAR & TORSION
@@ -2071,9 +2384,11 @@ with tab_detail:
             st.markdown(shear_torsion_report_markdown(SL, bw, h, cover, stirrup))
         with exp_right:
             st.write("Potongan Geser-Torsi")
-            st.pyplot(
+            render_figure_panel(
                 draw_shear_torsion_section_figure(SL, bw, h, cover, stirrup, db_torsion),
-                width="stretch"
+                "potongan_geser_torsi_tumpuan_kiri_320dpi.png",
+                "left_shear_torsion_detail",
+                viewer_height=460
             )
 
     with st.expander("HITUNGAN LENGKAP GESER & TORSI LAPANGAN"):
@@ -2082,9 +2397,11 @@ with tab_detail:
             st.markdown(shear_torsion_report_markdown(SM, bw, h, cover, stirrup))
         with exp_right:
             st.write("Potongan Geser-Torsi")
-            st.pyplot(
+            render_figure_panel(
                 draw_shear_torsion_section_figure(SM, bw, h, cover, stirrup, db_torsion),
-                width="stretch"
+                "potongan_geser_torsi_lapangan_320dpi.png",
+                "mid_shear_torsion_detail",
+                viewer_height=460
             )
 
     with st.expander("HITUNGAN LENGKAP GESER & TORSI TUMPUAN KANAN"):
@@ -2093,9 +2410,11 @@ with tab_detail:
             st.markdown(shear_torsion_report_markdown(SR, bw, h, cover, stirrup))
         with exp_right:
             st.write("Potongan Geser-Torsi")
-            st.pyplot(
+            render_figure_panel(
                 draw_shear_torsion_section_figure(SR, bw, h, cover, stirrup, db_torsion),
-                width="stretch"
+                "potongan_geser_torsi_tumpuan_kanan_320dpi.png",
+                "right_shear_torsion_detail",
+                viewer_height=460
             )
 
 with tab_potongan:
@@ -2103,23 +2422,29 @@ with tab_potongan:
 
     with p1:
         st.write("Tumpuan Kiri")
-        st.pyplot(
+        render_figure_panel(
             draw_shear_torsion_section_figure(SL, bw, h, cover, stirrup, db_torsion),
-            width="stretch"
+            "potongan_geser_torsi_tab_tumpuan_kiri_320dpi.png",
+            "left_shear_torsion_tab",
+            viewer_height=460
         )
 
     with p2:
         st.write("Lapangan")
-        st.pyplot(
+        render_figure_panel(
             draw_shear_torsion_section_figure(SM, bw, h, cover, stirrup, db_torsion),
-            width="stretch"
+            "potongan_geser_torsi_tab_lapangan_320dpi.png",
+            "mid_shear_torsion_tab",
+            viewer_height=460
         )
 
     with p3:
         st.write("Tumpuan Kanan")
-        st.pyplot(
+        render_figure_panel(
             draw_shear_torsion_section_figure(SR, bw, h, cover, stirrup, db_torsion),
-            width="stretch"
+            "potongan_geser_torsi_tab_tumpuan_kanan_320dpi.png",
+            "right_shear_torsion_tab",
+            viewer_height=460
         )
 
 with tab_penulangan:
@@ -2130,11 +2455,13 @@ with tab_penulangan:
         "serta keterangan penulangan torsi representatif."
     )
 
-    st.pyplot(
+    render_figure_panel(
         draw_shear_torsion_longitudinal_detail_figure(
             Ln, Ltump, xR1, zones_st, bw, h, cover, stirrup
         ),
-        width="stretch"
+        "detail_memanjang_geser_torsi_320dpi.png",
+        "longitudinal_shear_torsion",
+        viewer_height=420
     )
 
     pen_left, pen_right = st.columns([1.5, 1.0])
@@ -2150,18 +2477,22 @@ with tab_penulangan:
         for col, (label, zone) in zip(section_cols, section_items):
             with col:
                 st.caption(label)
-                st.pyplot(
+                render_figure_panel(
                     draw_shear_torsion_section_figure(
                         zone, bw, h, cover, stirrup, db_torsion
                     ),
-                    width="stretch"
+                    f"potongan_representatif_{label.lower().replace(' ', '_')}_320dpi.png",
+                    f"representative_{label.lower().replace(' ', '_')}",
+                    viewer_height=460
                 )
 
     with pen_right:
         st.write("Keterangan penulangan torsi")
-        st.pyplot(
+        render_figure_panel(
             draw_torsion_detail_note_figure(
                 torsion_rep_zone, bw, h, cover, stirrup, db_torsion
             ),
-            width="stretch"
+            "keterangan_penulangan_torsi_320dpi.png",
+            "torsion_note",
+            viewer_height=420
         )
