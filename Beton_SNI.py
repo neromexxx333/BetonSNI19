@@ -591,6 +591,7 @@ def build_rebar_layers(h, cover, stirrup, db, main_layers, min_layers,
 
 def installed_moment_capacity(bw, h, cover, stirrup, db, fc, fy,
                               main_layers, min_layers, tension_face):
+    phi = 0.90
     b1 = beta1(fc)
     steel_layers = build_rebar_layers(
         h, cover, stirrup, db, main_layers, min_layers, tension_face
@@ -687,7 +688,7 @@ def installed_moment_capacity(bw, h, cover, stirrup, db, fc, fy,
 
     return {
         "Mn": mn_nmm / 1e6,
-        "phiMn": 0.90 * mn_nmm / 1e6,
+        "phiMn": phi * mn_nmm / 1e6,
         "d": d,
         "dp": dp,
         "dt": dt,
@@ -797,6 +798,7 @@ def auto_adjust_reinforcement(Mu, bw, h, cover, stirrup, db, fc, fy,
     }
 
 def design_zone(title, Mu, bw, h, cover, stirrup, db, fc, fy, tension_face):
+    phi = 0.90
 
     d  = h - cover - stirrup - db/2
     dp = cover + stirrup + db/2
@@ -812,14 +814,14 @@ def design_zone(title, Mu, bw, h, cover, stirrup, db, fc, fy, tension_face):
 
     As1 = 0.85 * fc * bw * a / fy
     Mn1 = As1 * fy * (d - a/2)
-    phiMn1 = 0.90 * Mn1
+    phiMn1 = phi * Mn1
 
     if MuNmm <= phiMn1:
-        As_main = MuNmm / (0.90 * fy * (0.90 * d))
+        As_main = MuNmm / (phi * fy * (0.90 * d))
         As_min = 2 * Asbar
     else:
         M2 = MuNmm - phiMn1
-        As2 = M2 / (0.90 * fy * (d - dp))
+        As2 = M2 / (phi * fy * (d - dp))
         As_main = As1 + As2
         As_min = max(2 * Asbar, As2)
 
@@ -846,6 +848,7 @@ def design_zone(title, Mu, bw, h, cover, stirrup, db, fc, fy, tension_face):
         "As_compression_req": As_min,
         "As_tension_prov": As_tension_prov,
         "As_compression_prov": As_compression_prov,
+        "phi": phi,
         "Mn": capacity["Mn"],
         "phiMn": capacity["phiMn"],
         "d": capacity["d"],
@@ -887,11 +890,71 @@ def top_bottom_bar_text(zone, db):
 
     return top_text, bottom_text
 
+def safety_factor_ratio(capacity, demand):
+    if capacity is None or demand is None:
+        return None
+    demand_abs = abs(demand)
+    if demand_abs <= 1e-9:
+        return math.inf
+    return capacity / demand_abs
+
+def governing_safety_factor(*ratios):
+    valid = []
+    for ratio in ratios:
+        if ratio is None:
+            continue
+        if isinstance(ratio, (int, float)) and math.isnan(ratio):
+            continue
+        valid.append(ratio)
+    if not valid:
+        return None
+    return min(valid)
+
+def format_safety_factor(value):
+    if value is None or (isinstance(value, (int, float)) and math.isnan(value)):
+        return "-"
+    if math.isinf(value):
+        return "Tak terhingga"
+    return f"{value:.3f}"
+
+def shear_torsion_safety_factors(zone):
+    if zone["status"] == "GEOMETRI TIDAK VALID":
+        return {
+            "shear": None,
+            "torsion": None,
+            "section": None,
+            "longitudinal": None,
+            "governing": None
+        }
+
+    shear_sf = safety_factor_ratio(zone["phiVn"], zone["Vu"] * 1000.0)
+    torsion_sf = (
+        safety_factor_ratio(zone["phiTn"], zone["Tu_design"] * 1e6)
+        if zone["torsion_required"] else None
+    )
+    section_sf = safety_factor_ratio(zone["stress_right"], zone["stress_left"])
+    longitudinal_sf = (
+        safety_factor_ratio(zone["Al_prov"], zone["Al_req"])
+        if zone["torsion_required"] else None
+    )
+    safety_factor = governing_safety_factor(
+        shear_sf, torsion_sf, section_sf, longitudinal_sf
+    )
+
+    return {
+        "shear": shear_sf,
+        "torsion": torsion_sf,
+        "section": section_sf,
+        "longitudinal": longitudinal_sf,
+        "governing": safety_factor
+    }
+
 def report_markdown(zone, Ln, bw, h, cover, stirrup, db, fc, fy):
     tension_face = face_label(zone["tension_face"])
     compression_face = face_label(zone["compression_face"])
     balance_mark = "OK" if abs(zone["balance_diff"]) <= 1e-2 else "Periksa"
     eps_y = yield_strain(fy)
+    safety_factor = safety_factor_ratio(zone["phiMn"], zone["Mu"])
 
     rows = [
         ("Mu", f"{zone['Mu']:.2f} kN.m"),
@@ -900,6 +963,7 @@ def report_markdown(zone, Ln, bw, h, cover, stirrup, db, fc, fy):
         ("Tinggi balok, h", f"{h:.2f} mm"),
         ("Mutu beton, fc", f"{fc:.2f} MPa"),
         ("Mutu baja, fy", f"{fy:.2f} MPa"),
+        ("Faktor reduksi kekuatan lentur, phi", f"{zone['phi']:.2f}"),
         ("Selimut beton, cv", f"{cover:.2f} mm"),
         ("Diameter tulangan geser", f"{stirrup:.2f} mm"),
         ("Diameter tulangan tarik", f"D{db}"),
@@ -933,6 +997,7 @@ def report_markdown(zone, Ln, bw, h, cover, stirrup, db, fc, fy):
         ("Selisih keseimbangan, (Cc + Cs - T)", f"{zone['balance_diff'] / 1000.0:.4f} kN ({balance_mark})"),
         ("Momen nominal balok, Mn", f"{zone['Mn']:.2f} kN.m"),
         ("Momen rencana balok, phiMn", f"{zone['phiMn']:.2f} kN.m"),
+        ("Safety Factor = Kapasitas Momen Rencana/Momen Ultimit", format_safety_factor(safety_factor)),
         ("Status", zone["status"])
     ]
 
@@ -1116,6 +1181,7 @@ def build_torsion_bar_longitudinal_levels(
 def draw_shear_torsion_section_figure(zone, bw, h, cover, stirrup, db_torsion):
     fig, ax = plt.subplots(figsize=(4.8, 6.2))
     stirrup_use = zone.get("stirrup_design_dia", stirrup)
+    stirrup_label = zone.get("stirrup_count_text") or zone["stirrup_text"]
 
     if zone["status"] == "GEOMETRI TIDAK VALID":
         ax.text(0.5, 0.5, "Geometri inti sengkang\n tidak valid",
@@ -1146,7 +1212,7 @@ def draw_shear_torsion_section_figure(zone, bw, h, cover, stirrup, db_torsion):
         for x, y in positions:
             ax.add_patch(Circle((x, y), db_torsion / 2.0, color="#d35400"))
 
-        ax.text(bw / 2.0, h + 48, zone["stirrup_text"],
+        ax.text(bw / 2.0, h + 48, stirrup_label,
                 ha="center", va="bottom", fontsize=8,
                 color=stirrup_color, fontweight="bold")
         ax.text(bw / 2.0, h + 32, zone["longitudinal_text"],
@@ -1154,7 +1220,7 @@ def draw_shear_torsion_section_figure(zone, bw, h, cover, stirrup, db_torsion):
         ax.text(bw / 2.0, h + 16, f"Aoh = {zone['Aoh']:.0f} mm2 ; ph = {zone['ph']:.0f} mm",
                 ha="center", va="bottom", fontsize=8)
     else:
-        ax.text(bw / 2.0, h + 38, zone["stirrup_text"],
+        ax.text(bw / 2.0, h + 38, stirrup_label,
                 ha="center", va="bottom", fontsize=8,
                 color=stirrup_color, fontweight="bold")
         ax.text(bw / 2.0, h + 20, "Torsi diabaikan / hanya kontrol geser",
@@ -1185,18 +1251,23 @@ def draw_shear_torsion_section_figure(zone, bw, h, cover, stirrup, db_torsion):
     return fig
 
 def shear_torsion_summary_markdown(zones):
-    markdown = "| Zona | Vu (kN) | Tu input (kN.m) | Tu desain (kN.m) | Rezim | Transversal | Longitudinal Torsi | Status |\n"
-    markdown += "|---|---:|---:|---:|---|---|---|---|\n"
+    markdown = "| Zona | Vu (kN) | Tu input (kN.m) | Tu desain (kN.m) | Kategori Torsi | Transversal | Longitudinal Torsi | Safety Factor | Status |\n"
+    markdown += "|---|---:|---:|---:|---|---|---|---:|---|\n"
 
     for zone in zones:
+        stirrup_label = zone.get("stirrup_count_text") or zone["stirrup_text"]
+        safety_factor = format_safety_factor(
+            shear_torsion_safety_factors(zone)["governing"]
+        )
         markdown += (
             f"| {zone['title']} | "
             f"{zone['Vu']:.2f} | "
             f"{zone['Tu']:.2f} | "
             f"{zone.get('Tu_design', 0.0):.2f} | "
             f"{zone['torsion_regime']} | "
-            f"{zone['stirrup_text']} | "
+            f"{stirrup_label} | "
             f"{zone['longitudinal_text']} | "
+            f"{safety_factor} | "
             f"{zone['status']} |\n"
         )
 
@@ -1230,13 +1301,38 @@ def anchored_spacing_positions(start, end, spacing, anchor="start"):
 
     return unique_positions
 
-def compact_stirrup_label(zone, title):
+def stirrup_count_for_zone(start, end, spacing):
+    zone_length = max(end - start, 0.0)
+    if spacing is None or spacing <= 0 or zone_length <= 1e-9:
+        return 0
+    return max(1, math.ceil(zone_length / spacing - 1e-9))
+
+def stirrup_count_text_for_zone(zone, start, end):
+    if zone["status"] == "GEOMETRI TIDAK VALID":
+        return None
+    if zone["spacing_use"] is None:
+        return None
     stirrup_dia = zone.get("stirrup_design_dia", 0)
+    stirrup_count = stirrup_count_for_zone(start, end, zone["spacing_use"])
+    return f"{stirrup_count}D{stirrup_dia:.0f}-{zone['spacing_use']:.0f}"
+
+def assign_stirrup_count_info(zone, start, end):
+    count_text = stirrup_count_text_for_zone(zone, start, end)
+    zone["stirrup_count_text"] = count_text
+    zone["stirrup_count"] = (
+        stirrup_count_for_zone(start, end, zone["spacing_use"])
+        if count_text is not None else 0
+    )
+
+def compact_stirrup_label(zone, title, start, end):
     if zone["status"] == "GEOMETRI TIDAK VALID":
         return f"{title}\nGeometri tidak valid"
     if zone["spacing_use"] is None:
         return f"{title}\nTidak diwajibkan"
-    return f"{title}\n2 kaki D{stirrup_dia:.0f}-{zone['spacing_use']:.0f}"
+    count_text = zone.get("stirrup_count_text") or stirrup_count_text_for_zone(
+        zone, start, end
+    )
+    return f"{title}\n{count_text}"
 
 def transverse_design_mode_label(mode):
     return (
@@ -1455,7 +1551,7 @@ def draw_torsion_detail_note_figure(zone, bw, h, cover, stirrup, db_torsion):
 
     info_pairs = [
         ("Zona representatif", zone["title"]),
-        ("Transversal", zone["stirrup_text"]),
+        ("Transversal", zone.get("stirrup_count_text") or zone["stirrup_text"]),
         ("Longitudinal", zone["longitudinal_text"]),
         ("Tu desain", f"{zone['Tu_design']:.2f} kN.m")
     ]
@@ -1859,6 +1955,12 @@ def shear_torsion_report_markdown(zone, bw, h, cover, stirrup):
         markdown = "| Parameter | Nilai |\n|---|---|\n"
         markdown += f"| Vu | {zone['Vu']:.2f} kN |\n"
         markdown += f"| Tu | {zone['Tu']:.2f} kN.m |\n"
+        markdown += f"| Faktor reduksi kekuatan geser dan torsi, phi | {zone['phi']:.2f} |\n"
+        markdown += "| Rasio geser = phiVn/Vu | - |\n"
+        markdown += "| Rasio torsi = phiTn/Tu desain | - |\n"
+        markdown += "| Rasio tegangan gabungan = rhs/lhs | - |\n"
+        markdown += "| Rasio longitudinal torsi = Al terpasang/Al perlu | - |\n"
+        markdown += "| Safety Factor = nilai minimum ke 4 rasio | - |\n"
         markdown += f"| Status | {zone['status']} |\n"
         markdown += "\n"
         for note in zone["notes"]:
@@ -1873,14 +1975,22 @@ def shear_torsion_report_markdown(zone, bw, h, cover, stirrup):
             return "-"
         return fmt(value, unit, scale, digits)
 
+    safety_data = shear_torsion_safety_factors(zone)
+    shear_sf = safety_data["shear"]
+    torsion_sf = safety_data["torsion"]
+    section_sf = safety_data["section"]
+    longitudinal_sf = safety_data["longitudinal"]
+    safety_factor = safety_data["governing"]
+
     rows = [
         ("Vu", f"{zone['Vu']:.2f} kN"),
         ("Tu input", f"{zone['Tu']:.2f} kN.m"),
         ("Mode desain torsi", "Torsi kompatibilitas" if zone["torsion_mode"] == "compatibility" else "Torsi keseimbangan"),
         ("Mode desain transversal", transverse_design_mode_label(zone["transverse_design_mode"])),
+        ("Faktor reduksi kekuatan geser dan torsi, phi", f"{zone['phi']:.2f}"),
         ("Tu desain", f"{zone['Tu_design']:.2f} kN.m"),
         ("Reduksi Tu", f"{zone['Tu_reduction']:.2f} kN.m"),
-        ("Rezim torsi", zone["torsion_regime"]),
+        ("Kategori torsi", zone["torsion_regime"]),
         ("Lebar balok, bw", f"{bw:.2f} mm"),
         ("Tinggi balok, h", f"{h:.2f} mm"),
         ("Selimut beton", f"{cover:.2f} mm"),
@@ -1929,6 +2039,11 @@ def shear_torsion_report_markdown(zone, bw, h, cover, stirrup):
         ("phiTn terpasang", fmt(zone["phiTn"], "kN.m", 1e6)),
         ("Cek tegangan gabungan, lhs", f"{zone['stress_left']:.4f} MPa"),
         ("Cek tegangan gabungan, rhs", f"{zone['stress_right']:.4f} MPa"),
+        ("Rasio geser = phiVn/Vu", format_safety_factor(shear_sf)),
+        ("Rasio torsi = phiTn/Tu desain", format_safety_factor(torsion_sf)),
+        ("Rasio tegangan gabungan = rhs/lhs", format_safety_factor(section_sf)),
+        ("Rasio longitudinal torsi = Al terpasang/Al perlu", format_safety_factor(longitudinal_sf)),
+        ("Safety Factor = nilai minimum ke 4 rasio", format_safety_factor(safety_factor)),
         ("Status", zone["status"])
     ]
 
@@ -2054,9 +2169,20 @@ xR2 = Ln
 xM1 = (Ln - Llap) / 2
 xM2 = (Ln + Llap) / 2
 
+assign_stirrup_count_info(SL, 0.0, Ltump)
+assign_stirrup_count_info(SM, Ltump, xR1)
+assign_stirrup_count_info(SR, xR1, Ln)
+
 # ==========================================================
 # SUMMARY
 # ==========================================================
+st.markdown('<div class="sec">DESAIN PENULANGAN LENTUR</div>',
+            unsafe_allow_html=True)
+
+sf_L = format_safety_factor(safety_factor_ratio(L["phiMn"], L["Mu"]))
+sf_M = format_safety_factor(safety_factor_ratio(M["phiMn"], M["Mu"]))
+sf_R = format_safety_factor(safety_factor_ratio(R["phiMn"], R["Mu"]))
+
 c1,c2,c3 = st.columns(3)
 
 with c1:
@@ -2065,6 +2191,7 @@ with c1:
     st.write(f"Bawah = {L['n_min']}D{db}")
     st.write(f"Mu = {L['Mu']:.2f} kN.m")
     st.write(f"phiMn terpasang = {L['phiMn']:.2f} kN.m")
+    st.write(f"Safety Factor = {sf_L}")
     st.write(f"Status = {L['status']}")
 
 with c2:
@@ -2073,6 +2200,7 @@ with c2:
     st.write(f"Atas = {M['n_min']}D{db}")
     st.write(f"Mu = {M['Mu']:.2f} kN.m")
     st.write(f"phiMn terpasang = {M['phiMn']:.2f} kN.m")
+    st.write(f"Safety Factor = {sf_M}")
     st.write(f"Status = {M['status']}")
 
 with c3:
@@ -2081,9 +2209,10 @@ with c3:
     st.write(f"Bawah = {R['n_min']}D{db}")
     st.write(f"Mu = {R['Mu']:.2f} kN.m")
     st.write(f"phiMn terpasang = {R['phiMn']:.2f} kN.m")
+    st.write(f"Safety Factor = {sf_R}")
     st.write(f"Status = {R['status']}")
 
-with st.expander("HITUNGAN LENGKAP TUMPUAN KIRI"):
+with st.expander("HITUNGAN LENGKAP LENTUR TUMPUAN KIRI"):
     exp_left, exp_right = st.columns([2.2, 1.0])
     with exp_left:
         st.markdown(report_markdown(L, Ln, bw, h, cover, stirrup, db, fc, fy))
@@ -2096,7 +2225,7 @@ with st.expander("HITUNGAN LENGKAP TUMPUAN KIRI"):
             viewer_height=460
         )
 
-with st.expander("HITUNGAN LENGKAP LAPANGAN"):
+with st.expander("HITUNGAN LENGKAP LENTUR LAPANGAN"):
     exp_left, exp_right = st.columns([2.2, 1.0])
     with exp_left:
         st.markdown(report_markdown(M, Ln, bw, h, cover, stirrup, db, fc, fy))
@@ -2109,7 +2238,7 @@ with st.expander("HITUNGAN LENGKAP LAPANGAN"):
             viewer_height=460
         )
 
-with st.expander("HITUNGAN LENGKAP TUMPUAN KANAN"):
+with st.expander("HITUNGAN LENGKAP LENTUR TUMPUAN KANAN"):
     exp_left, exp_right = st.columns([2.2, 1.0])
     with exp_left:
         st.markdown(report_markdown(R, Ln, bw, h, cover, stirrup, db, fc, fy))
@@ -2125,7 +2254,7 @@ with st.expander("HITUNGAN LENGKAP TUMPUAN KANAN"):
 # ==========================================================
 # DETAIL BALOK
 # ==========================================================
-st.markdown('<div class="sec">DETAIL PENULANGAN BALOK</div>',
+st.markdown('<div class="sec">DETAIL PENULANGAN LENTUR BALOK</div>',
             unsafe_allow_html=True)
 
 fig, ax = plt.subplots(figsize=(15,5.4))
@@ -2174,11 +2303,11 @@ ax.text(Ln/2, band_y + band_h + 0.10,
 
 zone_bands = [
     (left_zone_start, left_zone_end, "#fce5cd",
-     compact_stirrup_label(SL, "Tumpuan kiri")),
+     compact_stirrup_label(SL, "Tumpuan kiri", left_zone_start, left_zone_end)),
     (field_zone_start, field_zone_end, "#d9eaf7",
-     compact_stirrup_label(SM, "Lapangan")),
+     compact_stirrup_label(SM, "Lapangan", field_zone_start, field_zone_end)),
     (right_zone_start, right_zone_end, "#fce5cd",
-     compact_stirrup_label(SR, "Tumpuan kanan"))
+     compact_stirrup_label(SR, "Tumpuan kanan", right_zone_start, right_zone_end))
 ]
 
 for start, end, color, label in zone_bands:
@@ -2199,7 +2328,7 @@ for boundary in [left_zone_end, right_zone_start]:
 # kiri atas
 for j,_ in enumerate(L["main_layers"]):
     yy = y0 + depth - 0.10 - j*0.08
-    ax.plot([xL1,xL2],[yy,yy],lw=2,color='red')
+    ax.plot([xL1,xL2],[yy,yy],lw=2,color='red', zorder=4)
 
 # kiri bawah
 for j,_ in enumerate(L["min_layers"]):
@@ -2214,12 +2343,12 @@ for j,_ in enumerate(M["main_layers"]):
 # lapangan atas
 for j,_ in enumerate(M["min_layers"]):
     yy = y0 + depth - 0.10 - j*0.08
-    ax.plot([xM1,xM2],[yy,yy],lw=2,color='green')
+    ax.plot([xM1,xM2],[yy,yy],lw=2,color='green', zorder=3)
 
 # kanan atas
 for j,_ in enumerate(R["main_layers"]):
     yy = y0 + depth - 0.10 - j*0.08
-    ax.plot([xR1,xR2],[yy,yy],lw=2,color='red')
+    ax.plot([xR1,xR2],[yy,yy],lw=2,color='red', zorder=4)
 
 # kanan bawah
 for j,_ in enumerate(R["min_layers"]):
@@ -2349,14 +2478,18 @@ with tab_ringkas:
     st.markdown(shear_torsion_summary_markdown(zones_st))
 
     g1, g2, g3 = st.columns(3)
+    sf_SL = format_safety_factor(shear_torsion_safety_factors(SL)["governing"])
+    sf_SM = format_safety_factor(shear_torsion_safety_factors(SM)["governing"])
+    sf_SR = format_safety_factor(shear_torsion_safety_factors(SR)["governing"])
 
     with g1:
         st.subheader("TUMPUAN KIRI")
         st.write(f"Vu = {SL['Vu']:.2f} kN")
         st.write(f"Tu input = {SL['Tu']:.2f} kN.m")
         st.write(f"Tu desain = {SL['Tu_design']:.2f} kN.m")
-        st.write(f"Transversal = {SL['stirrup_text']}")
+        st.write(f"Transversal = {SL.get('stirrup_count_text') or SL['stirrup_text']}")
         st.write(f"Longitudinal torsi = {SL['longitudinal_text']}")
+        st.write(f"Safety Factor = {sf_SL}")
         st.write(f"Status = {SL['status']}")
 
     with g2:
@@ -2364,8 +2497,9 @@ with tab_ringkas:
         st.write(f"Vu = {SM['Vu']:.2f} kN")
         st.write(f"Tu input = {SM['Tu']:.2f} kN.m")
         st.write(f"Tu desain = {SM['Tu_design']:.2f} kN.m")
-        st.write(f"Transversal = {SM['stirrup_text']}")
+        st.write(f"Transversal = {SM.get('stirrup_count_text') or SM['stirrup_text']}")
         st.write(f"Longitudinal torsi = {SM['longitudinal_text']}")
+        st.write(f"Safety Factor = {sf_SM}")
         st.write(f"Status = {SM['status']}")
 
     with g3:
@@ -2373,8 +2507,9 @@ with tab_ringkas:
         st.write(f"Vu = {SR['Vu']:.2f} kN")
         st.write(f"Tu input = {SR['Tu']:.2f} kN.m")
         st.write(f"Tu desain = {SR['Tu_design']:.2f} kN.m")
-        st.write(f"Transversal = {SR['stirrup_text']}")
+        st.write(f"Transversal = {SR.get('stirrup_count_text') or SR['stirrup_text']}")
         st.write(f"Longitudinal torsi = {SR['longitudinal_text']}")
+        st.write(f"Safety Factor = {sf_SR}")
         st.write(f"Status = {SR['status']}")
 
 with tab_detail:
